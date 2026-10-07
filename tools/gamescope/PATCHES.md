@@ -79,3 +79,12 @@ The device probe reproduced the old 8 MiB requirement against a 4,616,192-byte
 linear buffer, then verified UNORM and sRGB GPU sampling with the preserved layout.
 The build tests the retry guard and memory-type selection. Steam still needs an
 end-to-end device test after installing the new bundle.
+
+`0123-powervr-rgba-copy-surface.patch` requires an RGBA SDR surface for PowerVR's
+copy-based nested presentation. Gamescope's SDR shaders declare `rgba8`; a BGRA
+storage view reverses red and blue on the stock driver, and copying that image to
+a BGRA swapchain preserves the error. A native store-then-sample probe reproduced
+128/64/192 becoming 192/64/128 with BGRA, while RGBA retained 128/64/192. A live
+X11 checkerboard reproduced the same channel reversal. Other vendors, direct
+composition and HDR retain their existing format selection. This fixes channel
+order; it does not address Steam's separate corrupted DRI3 window contents.
