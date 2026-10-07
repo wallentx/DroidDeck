@@ -650,6 +650,14 @@ BUSCONF
     export STEAM_RUNTIME=1
     export LD_LIBRARY_PATH=$steam_root/steamrtarm64:$steam_root/steamrtarm64/panorama${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
     export SDL_VIDEO_X11_DGAMOUSE=0
+    bl_steam_angle=vulkan
+    if [ "${BL_STEAM_GL_PRESENT:-}" = 1 ]; then
+      # Keep the system driver for GPU rendering, but present Steam through ordinary DRI3.
+      # The inner compositor has neither android_wlegl nor the bridge's TAWC-DRI extension.
+      export DISABLE_GAMESCOPE_WSI=1 LIBGL_KOPPER_DISABLE=true
+      bl_steam_angle=gl
+      echo "== steam: system PowerVR uses OpenGL/DRI3 presentation through Zink"
+    fi
     # Decky is optional and session scoped: the app's marker opts in, and this supervisor is
     # reaped with the client session. Native ARM64 runs directly. A legacy x86_64 asset is used
     # only when its recorded architecture says so and droiddeck-fex has FEX and its runtime ready.
@@ -825,7 +833,7 @@ BUSCONF
       step "starting the Steam client${BL_STEAM_UI:+ ($BL_STEAM_UI UI)}"
       "$steam_root/steamrtarm64/steam" "${_bl_ui[@]}" "${_bl_cdp[@]}" "${_bl_lang[@]}" -clientbeta "$steam_channel" \
         -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 \
-        -cef-use-gl=angle -cef-use-angle=vulkan "$@"
+        -cef-use-gl=angle "-cef-use-angle=$bl_steam_angle" "$@"
       rc=$?
       echo "== steam exited rc=$rc"
       collect_steam_logs

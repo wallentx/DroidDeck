@@ -98,5 +98,7 @@ public final class SystemVulkanDriver {
         environment.add("BL_GAMESCOPE_BACKEND=sdl");
         // The Android pvr kernel accepts Vulkan DMA-BUF imports but rejects PRIME GEM handles.
         environment.add("BL_POWERVR_DRM_HANDLES=1");
+        // Inner Gamescope/Xwayland lacks the bridge's Android-buffer WSI protocols.
+        environment.add("BL_STEAM_GL_PRESENT=1");
     }
 }
