@@ -1,6 +1,6 @@
 diff --git a/src/nested_swapchain.hpp b/src/nested_swapchain.hpp
 new file mode 100644
-index 0000000..27a9c92
+index 0000000..06fc987
 --- /dev/null
 +++ b/src/nested_swapchain.hpp
 @@ -0,0 +1,53 @@
@@ -26,7 +26,7 @@ index 0000000..27a9c92
 +    constexpr VkImageUsageFlags direct = VK_IMAGE_USAGE_SAMPLED_BIT |
 +        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 +    config.copy = !mutableFormat || ( caps.supportedUsageFlags & direct ) != direct;
-+    config.usage = config.copy ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : direct;
++    config.usage = config.copy ? VkImageUsageFlags{VK_IMAGE_USAGE_TRANSFER_DST_BIT} : direct;
 +    if ( ( caps.supportedUsageFlags & config.usage ) != config.usage )
 +        return false;
 +
