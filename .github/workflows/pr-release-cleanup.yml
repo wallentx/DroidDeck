@@ -33,8 +33,8 @@ jobs:
           state=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .state)
           echo "closed=$([ "$state" = closed ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       # A token of the org's "DroidDeck CI Publisher" app, as build.yml's announce job uses.
-      - uses: actions/create-github-app-token@v2
-        if: ${{ steps.state.outputs.closed == 'true' }}
+      - uses: actions/create-github-app-token@v3
+        if: github.repository == 'Droid-Deck/DroidDeck' && steps.state.outputs.closed == 'true'
         id: ci-token
         with:
           app-id: ${{ vars.DROIDDECK_CI_APP_ID }}
@@ -42,7 +42,7 @@ jobs:
           owner: Droid-Deck
           repositories: DroidDeck-CI
       - name: Delete the test build
-        if: ${{ steps.state.outputs.closed == 'true' }}
+        if: github.repository == 'Droid-Deck/DroidDeck' && steps.state.outputs.closed == 'true'
         env:
           GH_TOKEN: ${{ steps.ci-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -58,13 +58,13 @@ jobs:
           done
           [ "$found" = 1 ] || echo "No test build for PR #$PR_NUMBER"
 
-      - uses: actions/checkout@v4
-        if: ${{ steps.state.outputs.closed == 'true' }}
+      - uses: actions/checkout@v7
+        if: github.repository == 'Droid-Deck/DroidDeck' && steps.state.outputs.closed == 'true'
         with:
           ref: main
           persist-credentials: false
       - name: Retire the Discord PR announcement
-        if: ${{ steps.state.outputs.closed == 'true' }}
+        if: github.repository == 'Droid-Deck/DroidDeck' && steps.state.outputs.closed == 'true'
         env:
           WEBHOOK: ${{ secrets.DISCORD_PR_BUILDS_WEBHOOK }}
           GH_TOKEN: ${{ github.token }}
@@ -73,6 +73,6 @@ jobs:
 
   catalog:
     needs: cleanup
-    if: ${{ always() }}
+    if: github.repository == 'Droid-Deck/DroidDeck' && (always())
     uses: ./.github/workflows/update-catalog.yml
     secrets: inherit

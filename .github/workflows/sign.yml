@@ -37,13 +37,13 @@ jobs:
       matrix:
         variant: ${{ fromJSON(inputs.variants) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: The apk (this run's build)
         if: inputs.run_id == ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: droiddeck-apk
           path: in
@@ -56,6 +56,7 @@ jobs:
         run: gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n droiddeck-apk -D in
 
       - name: Sign
+        if: github.repository == 'Droid-Deck/DroidDeck'
         env:
           RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
@@ -88,7 +89,7 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/release.p12"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact }}-${{ matrix.variant }}
           path: out/*

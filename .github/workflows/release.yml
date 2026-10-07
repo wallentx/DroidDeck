@@ -25,7 +25,7 @@ jobs:
       run_id: ${{ steps.find.outputs.run_id }}
       variants: ${{ steps.find.outputs.variants }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - id: find
@@ -53,6 +53,7 @@ jobs:
           echo "Signing Build APK run $id (main ${GITHUB_SHA::7}) as $VERSION: $variants" >> "$GITHUB_STEP_SUMMARY"
 
   sign:
+    if: github.repository == 'Droid-Deck/DroidDeck'
     needs: find
     uses: ./.github/workflows/sign.yml
     with:
@@ -72,11 +73,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: droiddeck-release-*
           merge-multiple: true
@@ -112,6 +113,7 @@ jobs:
 
   # A release made with this run's token fires no release event, so the in-app catalog is refreshed here.
   catalog:
+    if: github.repository == 'Droid-Deck/DroidDeck'
     needs: publish
     uses: ./.github/workflows/update-catalog.yml
     permissions:
