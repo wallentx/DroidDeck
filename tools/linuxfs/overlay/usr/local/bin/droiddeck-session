@@ -651,12 +651,17 @@ BUSCONF
     export LD_LIBRARY_PATH=$steam_root/steamrtarm64:$steam_root/steamrtarm64/panorama${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
     export SDL_VIDEO_X11_DGAMOUSE=0
     bl_steam_angle=vulkan
+    bl_steam_presentation=()
     if [ "${BL_STEAM_GL_PRESENT:-}" = 1 ]; then
       # Keep the system driver for GPU rendering, but present Steam through ordinary DRI3.
       # The inner compositor has neither android_wlegl nor the bridge's TAWC-DRI extension.
       export DISABLE_GAMESCOPE_WSI=1 LIBGL_KOPPER_DISABLE=true
       bl_steam_angle=gl
-      echo "== steam: system PowerVR uses OpenGL/DRI3 presentation through Zink"
+      # CEF renders correctly internally, but its accelerated shared-texture output is
+      # corrupted on this path. Software web compositing avoids that handoff; Gamescope
+      # and the selected game driver still use the system GPU.
+      bl_steam_presentation=(-cef-disable-gpu-compositing)
+      echo "== steam: system PowerVR uses OpenGL/DRI3 through Zink with software CEF compositing"
     fi
     # Decky is optional and session scoped: the app's marker opts in, and this supervisor is
     # reaped with the client session. Native ARM64 runs directly. A legacy x86_64 asset is used
@@ -777,7 +782,7 @@ BUSCONF
         done
       ) &
     fi
-    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=vulkan $*"
+    echo "== steam args: ${_bl_ui[*]} ${_bl_cdp[*]} ${_bl_lang[*]} -clientbeta $steam_channel -no-cef-sandbox -cef-force-gpu ${bl_steam_presentation[*]} -cef-ozone-platform=x11 -cef-use-gl=angle -cef-use-angle=$bl_steam_angle $*"
     # An update that cannot install asks for a restart (rc=42) every time; the count is capped so a
     # session can never again loop in silence, which reads as a menu opening and closing by itself.
     steam_updates=0
@@ -835,7 +840,7 @@ BUSCONF
       PATH="/usr/local/libexec/droiddeck-steam:$PATH" \
       BL_STEAM_WEBHELPER="$steam_root/steamrtarm64/steamwebhelper" \
       "$steam_root/steamrtarm64/steam" "${_bl_ui[@]}" "${_bl_cdp[@]}" "${_bl_lang[@]}" -clientbeta "$steam_channel" \
-        -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 \
+        -no-cef-sandbox -cef-force-gpu "${bl_steam_presentation[@]}" -cef-ozone-platform=x11 \
         -cef-use-gl=angle "-cef-use-angle=$bl_steam_angle" "$@"
       rc=$?
       echo "== steam exited rc=$rc"
