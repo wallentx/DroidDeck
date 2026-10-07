@@ -93,5 +93,8 @@ public final class SystemVulkanDriver {
         environment.add("HYBRIS_LD_LIBRARY_PATH=/vendor/lib64/egl:/vendor/lib64/hw:/vendor/lib64:/system/lib64:/system_ext/lib64");
         environment.add("VK_LAYER_PATH=" + new File(directory, "lib").getPath());
         environment.add("VK_INSTANCE_LAYERS=VK_LAYER_HYBRIS_compat");
+        // The Android driver has a render node, but no KMS primary node. SDL presents
+        // through the wrapper's Wayland Vulkan swapchain instead of a KMS-style path.
+        environment.add("BL_GAMESCOPE_BACKEND=sdl");
     }
 }
