@@ -45,5 +45,17 @@ library list, before anything is published.
   `GAMESCOPE_FOCUSABLE_WINDOWS`, so the client kept its loading screen over the running game
   (Skyrim SE, A Plague Tale: Innocence, on the games' own Xwayland). MapNotify now refreshes the flag.
 
+- `0120-nested-swapchain-capability-fallback.patch` - this app: nested Vulkan backends
+  negotiate presentation IDs/waits and mutable swapchain support. Surfaces lacking mutable
+  formats or storage usage receive copies from ordinary offscreen composition images, using
+  the same command-buffer barriers and presentation-layout transition as direct composition.
+  Swapchains respect advertised alpha modes, image counts and extents, and accept RGBA as well
+  as BGRA. Without presentation waits, FIFO acquisition anchors estimated frame scheduling;
+  it does not provide measured presentation timestamps. The build runs the capability-policy
+  tests in `tests/nested-swapchain.cpp`; actual presentation still needs device validation.
+
+`release.env` may set `GAMESCOPE_REPOSITORY` to fetch a component from a downstream repository
+while retaining the configured source for the other APK assets. The archive remains SHA-256 pinned.
+
 Sixteen more of Armada's patches are DRM/lease/HDR-on-KMS work for a native display, which this
 app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the runtime has.
