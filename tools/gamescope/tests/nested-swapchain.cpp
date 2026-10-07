@@ -1,4 +1,5 @@
 #include "nested_swapchain.hpp"
+#include "dmabuf_import.hpp"
 #include <cassert>
 #include <cstdio>
 
@@ -47,5 +48,37 @@ int main()
     assert(config.extent.width == 16 && config.extent.height == 4096);
     caps.maxImageCount = 1;
     assert(!gamescope::ChooseNestedSwapchainConfig(caps, false, 1280, 720, config));
-    std::puts("nested swapchain capability tests passed");
+    // Retry only the device/format/layout/flag combination reproduced on PowerVR.
+    using gamescope::RetryPowerVRLinearQuery;
+    assert(RetryPowerVRLinearQuery(0x1010, VK_FORMAT_B8G8R8A8_UNORM, 0, 1,
+                                  VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, VK_ERROR_FORMAT_NOT_SUPPORTED));
+    assert(RetryPowerVRLinearQuery(0x1010, VK_FORMAT_R8G8B8A8_UNORM, 0, 1,
+                                  VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, VK_ERROR_FORMAT_NOT_SUPPORTED));
+    assert(!RetryPowerVRLinearQuery(0x5143, VK_FORMAT_B8G8R8A8_UNORM, 0, 1,
+                                   VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, VK_ERROR_FORMAT_NOT_SUPPORTED));
+    assert(!RetryPowerVRLinearQuery(0x1010, VK_FORMAT_B8G8R8A8_UNORM, 1, 1,
+                                   VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, VK_ERROR_FORMAT_NOT_SUPPORTED));
+    assert(!RetryPowerVRLinearQuery(0x1010, VK_FORMAT_B8G8R8A8_UNORM, 0, 2,
+                                   VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, VK_ERROR_FORMAT_NOT_SUPPORTED));
+    assert(!RetryPowerVRLinearQuery(0x1010, VK_FORMAT_R16G16B16A16_SFLOAT, 0, 1,
+                                   VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, VK_ERROR_FORMAT_NOT_SUPPORTED));
+    assert(!RetryPowerVRLinearQuery(0x1010, VK_FORMAT_B8G8R8A8_UNORM, 0, 1,
+                                   0, VK_ERROR_FORMAT_NOT_SUPPORTED));
+    assert(!RetryPowerVRLinearQuery(0x1010, VK_FORMAT_B8G8R8A8_UNORM, 0, 1,
+                                   VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, VK_ERROR_DEVICE_LOST));
+
+    VkPhysicalDeviceMemoryProperties memory = {};
+    memory.memoryTypeCount = 3;
+    memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    memory.memoryTypes[1].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    memory.memoryTypes[2].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    using gamescope::DmabufMemoryType;
+    assert(DmabufMemoryType(memory, 7, 6, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 1);
+    assert(DmabufMemoryType(memory, 7, 4, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 2);
+    assert(DmabufMemoryType(memory, 1, 6, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == UINT32_MAX);
+    assert(DmabufMemoryType(memory, 7, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == UINT32_MAX);
+    assert(DmabufMemoryType(memory, 7, 4, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == UINT32_MAX);
+    std::puts("Gamescope presentation and DMA-BUF import tests passed");
 }

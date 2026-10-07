@@ -68,3 +68,14 @@ while retaining the configured source for the other APK assets. The archive rema
 
 Sixteen more of Armada's patches are DRM/lease/HDR-on-KMS work for a native display, which this
 app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the runtime has.
+
+`0122-powervr-linear-dmabuf-import.patch` preserves explicit linear DMA-BUF layouts
+when PowerVR rejects the mutable-format capability query. The retry is limited to
+single-plane RGBA8/BGRA8, checks base-format import support, and retains the original
+image flags and plane layout. Other rejected PowerVR layouts fail rather than being
+silently interpreted as optimal tiling. Imported memory types are selected from the
+intersection of the image and FD masks; CPU-mapping requirements remain strict.
+The device probe reproduced the old 8 MiB requirement against a 4,616,192-byte
+linear buffer, then verified UNORM and sRGB GPU sampling with the preserved layout.
+The build tests the retry guard and memory-type selection. Steam still needs an
+end-to-end device test after installing the new bundle.
