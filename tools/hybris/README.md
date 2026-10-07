@@ -101,6 +101,13 @@ reuse, fork behavior, handle cleanup and native-handle passthrough. Native devic
 probes also verified DMA-BUF identity and Vulkan memory import/image binding;
 these checks do not establish correct pixel rendering or end-to-end Steam support.
 
+`BL_STEAM_GL_PRESENT=1` selects OpenGL/DRI3 presentation for the system-PowerVR
+Steam client. The session disables Gamescope's implicit WSI layer and Mesa's
+Kopper path, and selects ANGLE's OpenGL backend. Zink still renders through the
+system Vulkan driver; this avoids creating Vulkan window surfaces against an inner
+server that provides neither `android_wlegl` nor `TAWC-DRI`. Other driver selections
+retain the existing Steam presentation settings. Device rendering remains unverified.
+
 ## Local evidence
 
 The test checkout keeps the release archive, source, build commands, patch,

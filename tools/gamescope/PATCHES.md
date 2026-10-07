@@ -57,5 +57,12 @@ library list, before anything is published.
 `release.env` may set `GAMESCOPE_REPOSITORY` to fetch a component from a downstream repository
 while retaining the configured source for the other APK assets. The archive remains SHA-256 pinned.
 
+- `0121-powervr-single-pixel-rcas.patch` - this app: select the existing single-pixel
+  RCAS shader on Imagination GPUs as well as Qualcomm. On the tested PowerVR device,
+  the quad-swizzled shader fails pipeline creation for layers 3 through 8 with YCbCr
+  mask 2; the single-pixel shader passed all 24 tested layer/mask combinations using
+  the APK's exact SPIR-V and libhybris runtime. Both variants cover the same 16x16
+  dispatch tile. This is a compilation compatibility fix, not a performance claim.
+
 Sixteen more of Armada's patches are DRM/lease/HDR-on-KMS work for a native display, which this
 app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the runtime has.
