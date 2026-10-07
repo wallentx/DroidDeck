@@ -1,0 +1,103 @@
+name: AVF GPU prerequisite probe
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['tools/avf/**', '.github/workflows/avf-gpu-probe.yml']
+  push:
+    branches: ['wallentx/**']
+    paths: ['tools/avf/**', '.github/workflows/avf-gpu-probe.yml']
+permissions:
+  contents: read
+concurrency:
+  group: avf-gpu-probe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      # Existing Arch image builder; never replaces an installed writable disk.
+      AETHER_REF: fe2ea2b78ce7701a0144f4532a1aed54e7e6030b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: wallentx/termux-aether-api
+          ref: ${{ env.AETHER_REF }}
+          path: aether-source
+      - name: Install build and QEMU tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-aarch64-linux-gnu make bc bison flex libssl-dev libelf-dev libdrm-dev qemu-system-arm
+      - name: Test probe result handling and framework compatibility
+        run: |
+          mkdir -p "$RUNNER_TEMP/gpu-classes"
+          javac --release 8 -d "$RUNNER_TEMP/gpu-classes" tools/avf/*.java
+          java -cp "$RUNNER_TEMP/gpu-classes" AvfGpuProbeTest
+          python3 -m unittest discover -s tools/avf -p 'test_*.py'
+      - uses: actions/cache/restore@v4
+        id: kernel
+        with:
+          path: |
+            guest-out/Image
+            guest-out/kernel.config
+          key: droiddeck-avf-gpu-v1-${{ env.AETHER_REF }}-${{ hashFiles('tools/avf/kernel.config') }}
+      - name: Build separate graphics kernel
+        if: steps.kernel.outputs.cache-hit != 'true'
+        run: |
+          cat tools/avf/kernel.config >> aether-source/guest/arch/kernel.config
+          bash aether-source/guest/arch/build.sh kernel
+      - name: Verify required built-in kernel drivers
+        run: |
+          for option in ARM64_4K_PAGES DRM DRM_VIRTIO_GPU INPUT_EVDEV VIRTIO_INPUT SND_VIRTIO BLK_DEV_INITRD RD_GZIP VIRTIO_FS; do
+            grep -qx "CONFIG_$option=y" guest-out/kernel.config
+          done
+          grep -qx 'CONFIG_LOCALVERSION="-droiddeck-avf"' guest-out/kernel.config
+      - uses: actions/cache/save@v4
+        if: steps.kernel.outputs.cache-hit != 'true'
+        with:
+          path: |
+            guest-out/Image
+            guest-out/kernel.config
+          key: ${{ steps.kernel.outputs.cache-primary-key }}
+      - name: Build diskless guest test
+        run: |
+          mkdir -p "$RUNNER_TEMP/drm-headers/libdrm"
+          cp /usr/include/libdrm/*.h "$RUNNER_TEMP/drm-headers/libdrm/"
+          aarch64-linux-gnu-gcc -static -O2 -Wall -Wextra -Werror -I"$RUNNER_TEMP/drm-headers" tools/avf/probe-init.c -o guest-out/probe-init
+          python3 aether-source/guest/arch/virtiofs-probe/build_initramfs.py guest-out/probe-init guest-out/probe-initramfs.cpio.gz
+      - name: Verify kernel enumeration using QEMU's 2D GPU
+        run: |
+          timeout 90 qemu-system-aarch64 -machine virt -cpu max -m 512 -nodefaults -no-reboot -display none -serial stdio \
+            -kernel guest-out/Image -initrd guest-out/probe-initramfs.cpio.gz \
+            -append 'console=ttyAMA0 rdinit=/init panic=-1 droiddeck_probe_ci_2d=1' \
+            -device virtio-gpu-pci > guest-out/qemu-console.txt 2>&1
+          python3 tools/avf/probe.py check-console --ci-2d guest-out/qemu-console.txt
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'build-tools;36.0.0'
+      - name: Package device probe with source provenance
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/d8" --min-api 35 --output guest-out/gpu-probe.jar "$RUNNER_TEMP"/gpu-classes/AvfGpuProbe*.class
+          printf 'commit=%s\naether_commit=%s\npurpose=diskless-gfxstream-probe\n' "$GITHUB_SHA" "$AETHER_REF" > guest-out/provenance.txt
+          cd guest-out
+          sha256sum Image kernel.config probe-initramfs.cpio.gz gpu-probe.jar provenance.txt > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avf-gpu-probe-${{ github.sha }}
+          path: |
+            guest-out/Image
+            guest-out/kernel.config
+            guest-out/probe-initramfs.cpio.gz
+            guest-out/gpu-probe.jar
+            guest-out/provenance.txt
+            guest-out/SHA256SUMS
+            guest-out/qemu-console.txt
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: avf-gpu-failure-${{ github.sha }}
+          path: guest-out/qemu-console.txt
+          if-no-files-found: ignore
