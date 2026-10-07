@@ -202,11 +202,14 @@ if [ -z "${BL_INSIDE:-}" ]; then
     [ -x /usr/local/bin/droiddeck-desktop ] || { echo "== the desktop package is not installed"; exit 66; }
     cores=$(program_cores)
     if [ -n "$cores" ]; then
-      echo "== desktop cores: $cores (the desktop and every program started from it)"
       # Pin this shell and let exec carry the mask. Android keeps the app on a smaller cpuset
       # until its activity is on top (foreground 0-5, background fewer), and a mask with no core
       # of that set is EINVAL: taskset -c then exits 1 and takes the whole session with it.
-      taskset -cp "$cores" $$ >/dev/null 2>&1 || echo "== desktop cores: not allowed right now, every core"
+      if taskset -cp "$cores" $$ >/dev/null 2>&1; then
+        echo "== desktop cores: $cores (the desktop and every program started from it)"
+      else
+        echo "== desktop core pinning denied; continuing with the allowed CPUs"
+      fi
     fi
     exec /usr/local/bin/droiddeck-desktop
   fi

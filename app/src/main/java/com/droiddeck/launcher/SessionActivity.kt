@@ -975,8 +975,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         // the evdev codes we inject.
         FileUtils.copyAsset(this, "wayland/keymap.xkb", File(runtimeDir, "keymap.xkb"))
 
-        // Turnip, not the system Adreno driver: importing the dma-bufs gamescope commits needs
-        // VK_EXT_image_drm_format_modifier, which the system driver does not implement.
+        // Adreno needs Turnip's DMA-BUF extensions; other GPU families use their system driver.
         val turnip = TurnipDriver(this)
         val driverId = if (CompositorHost.isStarted) null else turnip.install()
 

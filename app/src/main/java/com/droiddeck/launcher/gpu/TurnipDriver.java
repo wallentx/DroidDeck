@@ -25,11 +25,11 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * The Vulkan driver the in-app compositor runs on. It has to be Turnip: the system Adreno driver
+ * The Vulkan driver the in-app compositor runs on. Adreno needs Turnip: its system driver
  * does not implement VK_EXT_image_drm_format_modifier, so importing the dma-bufs gamescope hands
  * over fails and the session renders nothing. Two builds ship in the apk, one per Adreno
  * generation, and the GPU decides which is unpacked - unless the user has imported an AdrenoTools
- * zip of their own and chosen it, which then wins.
+ * zip of their own and chosen it, which then wins. Other GPU families use the system loader.
  *
  * <p>The guest's own Turnip is a different copy entirely - a glibc build inside the rootfs, or an
  * imported one ({@link LinuxVulkanDriverManager}). This one is the bionic build the app process
@@ -340,6 +340,14 @@ public final class TurnipDriver {
         }
         String model = gpuModel();
         Log.i(TAG, "gpu model: " + (model == null ? "unknown" : model));
+        boolean adreno = GpuInfo.Companion.detect().getFamily() != GpuInfo.Family.NOT_ADRENO;
+        return automaticDriver(adreno, model, android.os.Build.VERSION.SDK_INT);
+    }
+
+    static String automaticDriver(boolean adreno, String model, int sdk) {
+        // Android's API level identifies neither a GPU vendor nor an Adreno generation.
+        // Loading bundled Turnip on PowerVR succeeds as a library but finds no device.
+        if (!adreno) return null;
         if (model != null) {
             // "Adreno750", "adreno_830" - the generation is the first digit of the three.
             java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d)\\d\\d").matcher(model);
@@ -349,8 +357,8 @@ public final class TurnipDriver {
                 if (generation == '7') return DRIVER_A7XX;
             }
         }
-        // Nothing to go on: Android 16 shipped with the 8 Elite, so treat a new device as 8xx.
-        return android.os.Build.VERSION.SDK_INT >= 36 ? DRIVER_A8XX : DRIVER_A7XX;
+        // Retain the existing fallback only after identifying Adreno hardware.
+        return sdk >= 36 ? DRIVER_A8XX : DRIVER_A7XX;
     }
 
     /** KGSL names the GPU here, and this file is world-readable where /dev/kgsl-3d0 is not. */
