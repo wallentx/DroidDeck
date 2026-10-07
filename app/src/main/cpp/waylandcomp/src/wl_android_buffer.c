@@ -19,8 +19,11 @@ struct wire_handle {
     struct android_native_handle *handle;
     int received;
 };
-enum { MAX_HANDLE_FDS = 64, MAX_HANDLE_INTS = 256, MAX_BUFFER_SIDE = 8192,
-       CREATE_FROM_HANDLE_CLONE = 1 };
+enum { MAX_HANDLE_FDS = 64, MAX_HANDLE_INTS = 256, MAX_BUFFER_SIDE = 8192 };
+/* VNDK ABI (not exposed by the NDK): frameworks/native/libs/nativewindow/include/
+ * vndk/hardware_buffer.h, AHARDWAREBUFFER_CREATE_FROM_HANDLE_METHOD_CLONE = 3.
+ * Method 1 is not accepted by AHardwareBuffer_createFromHandle. */
+enum { CREATE_FROM_HANDLE_CLONE = 3 };
 static int (*import_handle)(const AHardwareBuffer_Desc *, const struct android_native_handle *,
                             int32_t, AHardwareBuffer **);
 static const struct android_native_handle *(*native_handle)(const AHardwareBuffer *);
@@ -123,8 +126,13 @@ static void create_buffer(struct wl_client *client, struct wl_resource *resource
         .width = (uint32_t)width, .height = (uint32_t)height, .layers = 1,
         .format = (uint32_t)format, .usage = (uint32_t)usage, .stride = (uint32_t)stride};
     AHardwareBuffer *hardware = NULL;
-    if (import_handle(&desc, wire->handle, CREATE_FROM_HANDLE_CLONE, &hardware) != 0 || !hardware) {
-        wl_resource_post_error(resource, ANDROID_WLEGL_ERROR_BAD_HANDLE, "Android rejected the native handle");
+    int status = import_handle(&desc, wire->handle, CREATE_FROM_HANDLE_CLONE, &hardware);
+    if (status != 0 || !hardware) {
+        droiddeck_log("display", "android_wlegl import failed: status=%d %dx%d stride=%d format=%d usage=0x%x fds=%d ints=%d",
+                     status, width, height, stride, format, (uint32_t)usage,
+                     wire->handle->num_fds, wire->handle->num_ints);
+        wl_resource_post_error(resource, ANDROID_WLEGL_ERROR_BAD_HANDLE,
+                               "Android rejected the native handle (status %d)", status);
         return;
     }
     struct wl_resource *buffer = create_android_buffer(client, id, hardware);
