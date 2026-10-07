@@ -96,5 +96,7 @@ public final class SystemVulkanDriver {
         // The Android driver has a render node, but no KMS primary node. SDL presents
         // through the wrapper's Wayland Vulkan swapchain instead of a KMS-style path.
         environment.add("BL_GAMESCOPE_BACKEND=sdl");
+        // The Android pvr kernel accepts Vulkan DMA-BUF imports but rejects PRIME GEM handles.
+        environment.add("BL_POWERVR_DRM_HANDLES=1");
     }
 }

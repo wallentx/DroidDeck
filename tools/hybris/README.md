@@ -87,6 +87,20 @@ on CI. The APK carries an isolated runtime archive, licenses, source and patch.
 upload. Explicit imported driver choices are preserved; Auto selects this wrapper
 only on PowerVR devices.
 
+System PowerVR sessions also enable `BL_POWERVR_DRM_HANDLES=1` in the session
+preload. The Android `pvr` render node rejects PRIME-to-GEM conversion even for
+DMA-BUFs that its Vulkan driver exports and imports successfully. The adapter
+tries the real operation first, then provides an owned descriptor-backed handle
+only for that node's `EINVAL` result. Real kernel handles continue to libdrm.
+An owned render descriptor and open-file-description checks prevent a reused
+descriptor number from inheriting an old handle. Other drivers and manually
+selected ICDs do not enable this path.
+
+`python3 -m unittest tools.tests.test_drm_handles` checks scoping, descriptor
+reuse, fork behavior, handle cleanup and native-handle passthrough. Native device
+probes also verified DMA-BUF identity and Vulkan memory import/image binding;
+these checks do not establish correct pixel rendering or end-to-end Steam support.
+
 ## Local evidence
 
 The test checkout keeps the release archive, source, build commands, patch,
