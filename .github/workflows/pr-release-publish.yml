@@ -50,7 +50,7 @@ jobs:
       automatic: ${{ steps.gate.outputs.automatic }}
       variants: ${{ steps.variants.outputs.list }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # Every variant a main build ships, so a PR build can be tried under any of them.
@@ -168,7 +168,7 @@ jobs:
       label: ${{ needs.authorize.outputs.label }}
       artifact: droiddeck-pr-signed
     secrets: inherit
-    if: ${{ needs.authorize.outputs.skip != 'true' }}
+    if: github.repository == 'Droid-Deck/DroidDeck' && (needs.authorize.outputs.skip != 'true')
 
   publish:
     needs: [authorize, sign]
@@ -179,7 +179,7 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: droiddeck-pr-signed-*
           merge-multiple: true
@@ -205,7 +205,8 @@ jobs:
           } > notes-head.md
           cat notes-head.md
       # A token of the org's "DroidDeck CI Publisher" app, as build.yml's announce job uses.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
+        if: github.repository == 'Droid-Deck/DroidDeck'
         id: ci-token
         with:
           app-id: ${{ vars.DROIDDECK_CI_APP_ID }}
@@ -213,6 +214,7 @@ jobs:
           owner: Droid-Deck
           repositories: DroidDeck-CI
       - name: Publish to DroidDeck-CI
+        if: github.repository == 'Droid-Deck/DroidDeck'
         id: publish
         env:
           GH_TOKEN: ${{ steps.ci-token.outputs.token }}
@@ -279,6 +281,7 @@ jobs:
           gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/publish-test"
 
       - name: Report the signed build on the PR
+        if: github.repository == 'Droid-Deck/DroidDeck'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.authorize.outputs.pr_number }}
@@ -319,7 +322,7 @@ jobs:
       # Asked for (the label, a manual run): always announced. Signed on its own after a push:
       # only a PR's first test build is, and later ones update its release quietly.
       - name: Post to Discord
-        if: ${{ always() && steps.publish.outcome == 'success' && (needs.authorize.outputs.automatic != 'true' || steps.publish.outputs.first == 'true') }}
+        if: github.repository == 'Droid-Deck/DroidDeck' && (always() && steps.publish.outcome == 'success' && (needs.authorize.outputs.automatic != 'true' || steps.publish.outputs.first == 'true'))
         env:
           WEBHOOK: ${{ secrets.DISCORD_BUILDS_WEBHOOK }}
           GH_TOKEN: ${{ github.token }}
@@ -344,6 +347,6 @@ jobs:
 
   catalog:
     needs: publish
-    if: ${{ always() && needs.publish.result != 'skipped' }}
+    if: github.repository == 'Droid-Deck/DroidDeck' && (always() && needs.publish.result != 'skipped')
     uses: ./.github/workflows/update-catalog.yml
     secrets: inherit

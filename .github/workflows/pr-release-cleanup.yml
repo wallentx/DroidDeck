@@ -19,7 +19,8 @@ jobs:
     timeout-minutes: 5
     steps:
       # A token of the org's "DroidDeck CI Publisher" app, as build.yml's announce job uses.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
+        if: github.repository == 'Droid-Deck/DroidDeck'
         id: ci-token
         with:
           app-id: ${{ vars.DROIDDECK_CI_APP_ID }}
@@ -27,6 +28,7 @@ jobs:
           owner: Droid-Deck
           repositories: DroidDeck-CI
       - name: Delete the test build
+        if: github.repository == 'Droid-Deck/DroidDeck'
         env:
           GH_TOKEN: ${{ steps.ci-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -44,6 +46,6 @@ jobs:
 
   catalog:
     needs: cleanup
-    if: ${{ always() }}
+    if: github.repository == 'Droid-Deck/DroidDeck' && (always())
     uses: ./.github/workflows/update-catalog.yml
     secrets: inherit
