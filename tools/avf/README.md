@@ -50,8 +50,28 @@ The diskless device gate **passed on 2026-10-07 UTC**, using source commit
 | Probe lifetime | Exited; no probe VM remained |
 
 The existing Arch VM remained cleanly stopped with zero sessions. Its kernel
-and disk were not replaced. **Vulkan drawing and Steam remain untested**; this
-result verifies the GPU transport prerequisites only.
+and disk were not replaced. This result verifies the GPU transport prerequisites.
+
+### Vulkan rendering result
+
+On 2026-10-07 UTC, the existing Arch guest booted with the separate graphics
+kernel and Termux-Aether API commit `e1b6c2ec4896dc40ff6c6dc3f971d9b7fdc7c41f`.
+With `vulkan-gfxstream 26.2.4` selected explicitly, Vulkan reported
+`Virtio-GPU GFXStream (PowerVR C-Series CXTP-48-1536 MC1)`, vendor `0x1010`,
+device `0x70061042`, and Vulkan 1.4.0.
+
+The offscreen probe created a graphics pipeline, submitted a real triangle draw,
+waited for its fence, copied the image into host-visible memory and validated
+all pixels. A separate host-side check of the downloaded image agreed:
+
+| Pixel class | Count |
+| --- | ---: |
+| Red triangle | 1152 |
+| Blue background | 2944 |
+| Unexpected | 0 |
+
+This verifies rendering and readback through AVF/Gfxstream on this phone.
+**DroidDeck's on-screen VM session and Steam are not yet integrated or tested.**
 
 ## Build and run
 
@@ -106,8 +126,8 @@ ordinary launches continue to select `Image`.
 ## Remaining integration gates
 
 1. Stage the additional graphics kernel after a passing diskless device gate.
-2. Enable the GPU configuration in the VM owner and verify `vulkaninfo --summary`
-   and a rendered test with `vulkan-gfxstream` inside Arch. Reject CPU renderers.
+2. Enable the GPU configuration in the VM owner and verify rendering with the
+   Gfxstream ICD. This gate passed on the development Pixel as recorded above.
 3. Connect VM ownership, display, input, audio and session lifetime to DroidDeck;
    verify Steam and a game. AVF launch acceptance is not that validation.
 
@@ -127,8 +147,32 @@ actionlint .github/workflows/avf-gpu-probe.yml
 ```
 
 The Java helper supports both primitive and boxed Boolean setters: this phone's
-installed AVF framework uses boxed setters where the Android 17 release source
-uses primitives. Missing APIs fail the probe.
+installed AVF framework uses boxed setters. Missing APIs fail the probe.
+
+## Offscreen render probe
+
+CI publishes a separate `avf-render-probe-<commit>` artifact with an ARM64 glibc
+executable and checksums. It can also be built with the existing Termux GNU libc
+development files, Clang, Vulkan headers and `glslangValidator`:
+
+```sh
+python tools/avf/build_render_probe.py "$TMPDIR/droiddeck-render"
+```
+
+Copy the executable into the graphics-enabled guest and run it with a bounded
+timeout and the expected hardware vendor ID:
+
+```sh
+XDG_RUNTIME_DIR=/run/user/0 \
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/gfxstream_vk_icd.json \
+  timeout 40 ./render-probe 0x1010 triangle.ppm
+```
+
+The runtime directory must exist and belong to the guest user. Exit 0 plus
+`status=passed` means the expected non-CPU device rendered the triangle and its
+pixels passed validation. The PPM preserves the actual readback, including on
+a pixel-validation failure. This is a correctness test, not a benchmark or a
+window-system presentation test.
 
 References: [AOSP custom VMs and Gfxstream](https://android.googlesource.com/platform/packages/modules/Virtualization/+/refs/tags/android-17.0.0_r1/docs/custom_vm.md),
 [Termux-Aether Arch builder](https://github.com/wallentx/termux-aether-api/tree/fe2ea2b78ce7701a0144f4532a1aed54e7e6030b/guest/arch).

@@ -28,7 +28,7 @@ jobs:
       - name: Install build and QEMU tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y gcc-aarch64-linux-gnu linux-libc-dev-arm64-cross make bc bison flex libssl-dev libelf-dev qemu-system-arm
+          sudo apt-get install -y gcc-aarch64-linux-gnu linux-libc-dev-arm64-cross make bc bison flex libssl-dev libelf-dev qemu-system-arm libvulkan-dev glslang-tools
       - name: Test probe result handling and framework compatibility
         run: |
           mkdir -p "$RUNNER_TEMP/gpu-classes"
@@ -36,6 +36,21 @@ jobs:
           java -cp "$RUNNER_TEMP/gpu-classes" AvfGpuProbeTest
           java -cp "$RUNNER_TEMP/gpu-classes" StageGraphicsKernelTest
           python3 -m unittest discover -s tools/avf -p 'test_*.py'
+      - name: Build offscreen Vulkan render probe
+        run: |
+          python3 tools/avf/build_render_probe.py "$RUNNER_TEMP/render-probe"
+          mkdir -p render-out
+          cp "$RUNNER_TEMP/render-probe/render-probe" render-out/
+          cp "$RUNNER_TEMP/render-probe/build-command.json" render-out/
+          printf 'commit=%s\npurpose=offscreen-vulkan-render-probe\n' "$GITHUB_SHA" > render-out/provenance.txt
+          cd render-out
+          sha256sum render-probe build-command.json provenance.txt > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avf-render-probe-${{ github.sha }}
+          path: render-out/
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/cache/restore@v4
         id: kernel
         with:
