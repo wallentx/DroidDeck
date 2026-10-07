@@ -55,6 +55,7 @@ object SessionFiles {
             "usr/local/bin/droiddeck-desktop-games" to "usr/local/bin/droiddeck-desktop-games",
             "usr/local/bin/droiddeck-desktop-bookmarks" to "usr/local/bin/droiddeck-desktop-bookmarks",
             "usr/local/bin/droiddeck-steam-shim" to "usr/local/bin/droiddeck-steam-shim",
+            "usr/local/bin/droiddeck-steam-taskset" to "usr/local/libexec/droiddeck-steam/taskset",
             "usr/local/bin/droiddeck-steam-shortcuts" to "usr/local/bin/droiddeck-steam-shortcuts",
             "usr/local/bin/droiddeck-steam-games" to "usr/local/bin/droiddeck-steam-games",
             "usr/local/bin/droiddeck-pad-defaults" to "usr/local/bin/droiddeck-pad-defaults",

@@ -831,6 +831,9 @@ BUSCONF
         droiddeck-steam-language "$HOME" "$BL_STEAM_LANGUAGE" || true
       fi
       step "starting the Steam client${BL_STEAM_UI:+ ($BL_STEAM_UI UI)}"
+      # Keep Valve's optional webhelper CPU pinning from aborting browser startup.
+      PATH="/usr/local/libexec/droiddeck-steam:$PATH" \
+      BL_STEAM_WEBHELPER="$steam_root/steamrtarm64/steamwebhelper" \
       "$steam_root/steamrtarm64/steam" "${_bl_ui[@]}" "${_bl_cdp[@]}" "${_bl_lang[@]}" -clientbeta "$steam_channel" \
         -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 \
         -cef-use-gl=angle "-cef-use-angle=$bl_steam_angle" "$@"
