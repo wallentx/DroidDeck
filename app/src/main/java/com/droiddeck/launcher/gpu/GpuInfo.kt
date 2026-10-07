@@ -26,6 +26,7 @@ data class GpuInfo(
     val kgslName: String = "",
     /** Where [model] came from: "kernel", "vulkan" or "platform", "" when unknown. */
     val modelSource: String = "",
+    val powerVr: Boolean = false,
 ) {
     enum class Family(val label: String) {
         A8XX("Adreno 8xx"),
@@ -45,6 +46,7 @@ data class GpuInfo(
 
     val support: Support
         get() = when {
+            powerVr -> Support.UNTESTED
             family == Family.NOT_ADRENO -> Support.UNSUPPORTED
             family == Family.A6XX && model == 650 -> Support.TESTED
             family == Family.A8XX -> Support.TESTED
@@ -56,7 +58,8 @@ data class GpuInfo(
     val supportText: String
         get() = when (support) {
             Support.TESTED -> "Supported"
-            Support.UNTESTED -> if (family == Family.A7XX_LOW) "Experimental: its drivers are test builds"
+            Support.UNTESTED -> if (powerVr) "Experimental PowerVR: system driver through libhybris"
+                else if (family == Family.A7XX_LOW) "Experimental: its drivers are test builds"
                 else "Outside tested hardware (Adreno 650, 725 and newer): it may not run"
             Support.UNSUPPORTED -> "Not supported: DroidDeck needs an Adreno (Snapdragon) GPU"
         }
@@ -64,7 +67,8 @@ data class GpuInfo(
     /** [supportText] in the app's language. */
     fun supportText(context: Context): String = context.getString(when (support) {
         Support.TESTED -> R.string.gpuinfo_supported
-        Support.UNTESTED -> if (family == Family.A7XX_LOW) R.string.gpuinfo_experimental else R.string.gpuinfo_below_tested
+        Support.UNTESTED -> if (powerVr) R.string.gpuinfo_powervr_experimental
+            else if (family == Family.A7XX_LOW) R.string.gpuinfo_experimental else R.string.gpuinfo_below_tested
         Support.UNSUPPORTED -> R.string.gpuinfo_unsupported
     })
 
@@ -77,6 +81,7 @@ data class GpuInfo(
 
         fun detect(): GpuInfo {
             val adreno = File("/sys/class/kgsl/kgsl-3d0").exists() || File("/vendor/lib64/hw/vulkan.adreno.so").exists()
+            val powerVr = SystemVulkanDriver.isPowerVr()
             val raw = listOf("/sys/class/kgsl/kgsl-3d0/gpu_model", "/sys/class/kgsl/kgsl-3d0/gpu_chipid")
                 .firstNotNullOfOrNull { FileUtils.readString(File(it))?.trim()?.takeIf(String::isNotEmpty) }
             // Where vendors put the chip's model, named when it is known: "Snapdragon 8 Gen 2 (QCS8550)".
@@ -97,10 +102,11 @@ data class GpuInfo(
             val family = familyOf(adreno, model)
             val samsung = Build.MANUFACTURER.equals("samsung", ignoreCase = true)
             return GpuInfo(
-                name = if (!adreno) Build.HARDWARE.ifBlank { UNNAMED } else if (model > 0) "Adreno $model" else "Adreno",
+                name = if (powerVr) "PowerVR" else if (!adreno) Build.HARDWARE.ifBlank { UNNAMED } else if (model > 0) "Adreno $model" else "Adreno",
                 model = model, family = family, soc = soc,
                 oneUi8Gen2 = samsung && model == 740,
                 kgslName = raw.orEmpty(), modelSource = source,
+                powerVr = powerVr,
             )
         }
 
