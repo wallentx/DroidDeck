@@ -92,6 +92,43 @@ def transfer(source, target, expected):
     shell(f"chmod 0400 {shlex.quote(target)}")
 
 
+def verified_device_stage(report, commit):
+    if (report.get("status") != "passed" or report.get("source_commit") != commit
+            or report.get("disks") != 0):
+        raise ValueError("A passing diskless device probe from this exact artifact is required")
+    stage = report.get("device_stage", "")
+    if not isinstance(stage, str) or not re.fullmatch(r"/data/local/tmp/droiddeck-gpu-[0-9a-f]{32}", stage):
+        raise ValueError("Invalid device staging directory")
+    return stage
+
+
+def stage_kernel(artifact, commit, result):
+    hashes = validate_artifact(artifact, commit)
+    report = json.loads(result.read_text())
+    stage = verified_device_stage(report, commit)
+    response = subprocess.run(["termux-arch-vm", "--status"], capture_output=True, text=True,
+                              check=True, timeout=25)
+    state = json.loads(response.stdout)
+    if (state.get("status") != "stopped" or state.get("running") is not False
+            or state.get("active_sessions") != 0 or state.get("clean_shutdown") is not True):
+        raise RuntimeError(f"Arch must be cleanly stopped: {state.get('status')}, {state.get('reason')}")
+    helper = f"{stage}/gpu-probe.jar"
+    if shell(f"sha256sum {helper}").split()[0] != hashes["gpu-probe.jar"]:
+        raise ValueError("Device helper checksum mismatch")
+    output = shell(f"CLASSPATH={helper} app_process /system/bin StageGraphicsKernel {stage} {hashes['Image']}",
+                   timeout=55)
+    (result.parent / "stage-kernel.log").write_text(output)
+    records = [json.loads(line) for line in output.splitlines() if line.startswith('{"operation":')]
+    if (len(records) != 1 or records[0].get("operation") not in ("staged", "unchanged")
+            or records[0].get("image_sha256") != hashes["Image"]
+            or records[0].get("normal_kernel_replaced") is not False
+            or records[0].get("guest_disk_opened") is not False):
+        raise RuntimeError("Kernel staging did not return a verified result")
+    records[0]["source_commit"] = commit
+    (result.parent / "stage-kernel.json").write_text(json.dumps(records[0], indent=2) + "\n")
+    print(output, end="")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="operation", required=True)
@@ -102,9 +139,16 @@ def main():
     run.add_argument("artifact", type=Path)
     run.add_argument("--commit", required=True)
     run.add_argument("--output", type=Path, required=True)
+    stage = sub.add_parser("stage-kernel", help="Add a verified Image-gfxstream; preserve Image and the guest disk")
+    stage.add_argument("artifact", type=Path)
+    stage.add_argument("--commit", required=True)
+    stage.add_argument("--probe-result", type=Path, required=True)
     args = parser.parse_args()
     if args.operation == "check-console":
         verify_console(args.console.read_text(), ci_2d=args.ci_2d)
+        return
+    if args.operation == "stage-kernel":
+        stage_kernel(args.artifact, args.commit, args.probe_result)
         return
     hashes = validate_artifact(args.artifact, args.commit)
     if shell("id -u").strip() != "2000":

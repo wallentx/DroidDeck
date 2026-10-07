@@ -28,6 +28,15 @@ class ProbeTest(unittest.TestCase):
     def test_complete_artifact(self):
         self.assertEqual(set(probe.FILES), set(probe.validate_artifact(self.root, self.commit)))
 
+    def test_staging_requires_exact_passing_diskless_device_result(self):
+        stage = "/data/local/tmp/droiddeck-gpu-" + "1" * 32
+        valid = dict(status="passed", source_commit=self.commit, disks=0, device_stage=stage)
+        self.assertEqual(stage, probe.verified_device_stage(valid, self.commit))
+        for change in (dict(status="failed"), dict(source_commit="b" * 40), dict(disks=1),
+                       dict(device_stage=stage + "; true"), dict(device_stage="/data/local/tmp/termux-arch-v2")):
+            with self.assertRaises(ValueError):
+                probe.verified_device_stage(dict(valid, **change), self.commit)
+
     def test_rejects_corruption_and_wrong_source(self):
         with self.assertRaisesRegex(ValueError, "source"):
             probe.validate_artifact(self.root, "b" * 40)

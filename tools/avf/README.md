@@ -79,10 +79,33 @@ trusted repository's successful run, since checksums alone do not authenticate i
 and Gfxstream context creation were verified on the phone. The guest powers off
 before success. QEMU's 2D test cannot satisfy that device gate.
 
+## Stage the additional graphics kernel
+
+After a passing device run, close Arch's sessions and verify it has stopped
+cleanly. Artifacts built with the staging helper can then add the separate
+`Image-gfxstream` slot:
+
+```sh
+python tools/avf/probe.py stage-kernel /private/path/to/artifact \
+  --commit FULL_40_CHARACTER_COMMIT \
+  --probe-result .local/benchmarks/avf-gpu/result.json
+```
+
+This requires a passing diskless report for that exact artifact. It checks the
+device helper's checksum, takes the VM owner's existing POSIX lock without
+creating a new lock file, and validates private ownership, permissions, ARM64
+Image header and SHA-256. The copy is synced, verified and atomically published
+as `Image-gfxstream`. An existing slot is accepted only when its checksum is
+identical. The normal `Image` and writable guest disk are never opened for
+replacement. Staging does not change the default launch mode or start a VM.
+
+The helper reuses the pinned Termux-Aether kernel-maintenance primitives. The
+API's explicit `graphics_mode=gfxstream` launch selects this separate slot;
+ordinary launches continue to select `Image`.
+
 ## Remaining integration gates
 
-1. With the diskless device gate passed, make a reversible kernel upgrade using
-   Termux-Aether's existing maintenance/backup mechanism.
+1. Stage the additional graphics kernel after a passing diskless device gate.
 2. Enable the GPU configuration in the VM owner and verify `vulkaninfo --summary`
    and a rendered test with `vulkan-gfxstream` inside Arch. Reject CPU renderers.
 3. Connect VM ownership, display, input, audio and session lifetime to DroidDeck;
@@ -92,8 +115,12 @@ before success. QEMU's 2D test cannot satisfy that device gate.
 
 ```sh
 mkdir -p "$TMPDIR/droiddeck-avf-tests"
-javac --release 8 -d "$TMPDIR/droiddeck-avf-tests" tools/avf/*.java
+# Point this at the pinned Termux-Aether API source used by the workflow.
+aether_source=/path/to/termux-aether-api
+javac --release 8 -d "$TMPDIR/droiddeck-avf-tests" tools/avf/*.java \
+  "$aether_source/guest/arch/kernel-upgrade/KernelUpgrade.java"
 java -cp "$TMPDIR/droiddeck-avf-tests" AvfGpuProbeTest
+java -cp "$TMPDIR/droiddeck-avf-tests" StageGraphicsKernelTest
 python -m unittest discover -s tools/avf -p 'test_*.py'
 clang -std=c11 -Wall -Wextra -Werror -fsyntax-only tools/avf/probe-init.c
 actionlint .github/workflows/avf-gpu-probe.yml

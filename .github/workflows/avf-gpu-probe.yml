@@ -32,8 +32,9 @@ jobs:
       - name: Test probe result handling and framework compatibility
         run: |
           mkdir -p "$RUNNER_TEMP/gpu-classes"
-          javac --release 8 -d "$RUNNER_TEMP/gpu-classes" tools/avf/*.java
+          javac --release 8 -d "$RUNNER_TEMP/gpu-classes" tools/avf/*.java aether-source/guest/arch/kernel-upgrade/KernelUpgrade.java
           java -cp "$RUNNER_TEMP/gpu-classes" AvfGpuProbeTest
+          java -cp "$RUNNER_TEMP/gpu-classes" StageGraphicsKernelTest
           python3 -m unittest discover -s tools/avf -p 'test_*.py'
       - uses: actions/cache/restore@v4
         id: kernel
@@ -76,7 +77,7 @@ jobs:
           packages: 'build-tools;36.0.0'
       - name: Package device probe with source provenance
         run: |
-          "$ANDROID_HOME/build-tools/36.0.0/d8" --min-api 35 --output guest-out/gpu-probe.jar "$RUNNER_TEMP"/gpu-classes/AvfGpuProbe*.class
+          "$ANDROID_HOME/build-tools/36.0.0/d8" --min-api 35 --output guest-out/gpu-probe.jar "$RUNNER_TEMP"/gpu-classes/AvfGpuProbe*.class "$RUNNER_TEMP/gpu-classes/StageGraphicsKernel.class" "$RUNNER_TEMP/gpu-classes/KernelUpgrade.class"
           printf 'commit=%s\naether_commit=%s\npurpose=diskless-gfxstream-probe\n' "$GITHUB_SHA" "$AETHER_REF" > guest-out/provenance.txt
           cd guest-out
           sha256sum Image kernel.config probe-initramfs.cpio.gz gpu-probe.jar provenance.txt > SHA256SUMS
