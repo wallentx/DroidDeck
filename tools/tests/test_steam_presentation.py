@@ -14,7 +14,7 @@ class SteamPresentationTest(unittest.TestCase):
         source = SESSION.read_text()
         begin = source.index("    bl_steam_angle=vulkan")
         end = source.index("\n    # Decky", begin)
-        command = source.index('      "$steam_root/steamrtarm64/steam" "${_bl_ui[@]}"')
+        command = source.index('      PATH="/usr/local/libexec/droiddeck-steam:$PATH"')
         command_end = source.index("\n      rc=$?", command)
         script = (source[begin:end] + '\n_bl_ui=(-gamepadui); _bl_cdp=(); _bl_lang=()\n'
                   + source[command:command_end])
@@ -30,13 +30,18 @@ class SteamPresentationTest(unittest.TestCase):
             program.write_text(f"#!{sys.executable}\n" +
                                'import json, os, sys\nprint(json.dumps({"args":sys.argv[1:],'
                                '"disable":os.getenv("DISABLE_GAMESCOPE_WSI"),'
-                               '"kopper":os.getenv("LIBGL_KOPPER_DISABLE")}))\n')
+                               '"kopper":os.getenv("LIBGL_KOPPER_DISABLE"),'
+                               '"path":os.getenv("PATH"),'
+                               '"helper":os.getenv("BL_STEAM_WEBHELPER")}))\n')
             program.chmod(0o755)
             env.update(steam_root=tmp, steam_channel="steamdeck_publicbeta")
             result = subprocess.run(["bash", "-c", script, "test", "steam://open/main"],
                                     env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
-            return json.loads(result.stdout.splitlines()[-1])
+            launch = json.loads(result.stdout.splitlines()[-1])
+            self.assertTrue(launch["path"].startswith("/usr/local/libexec/droiddeck-steam:"))
+            self.assertEqual(launch["helper"], str(Path(tmp) / "steamrtarm64/steamwebhelper"))
+            return launch
 
     def test_default_keeps_vulkan(self):
         result = self.launch()

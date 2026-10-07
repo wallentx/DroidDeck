@@ -64,6 +64,7 @@ object SessionFiles {
             "usr/local/bin/droiddeck-desktop-games" to "usr/local/bin/droiddeck-desktop-games",
             "usr/local/bin/droiddeck-desktop-bookmarks" to "usr/local/bin/droiddeck-desktop-bookmarks",
             "usr/local/bin/droiddeck-steam-shim" to "usr/local/bin/droiddeck-steam-shim",
+            "usr/local/bin/droiddeck-steam-taskset" to "usr/local/libexec/droiddeck-steam/taskset",
             "usr/local/bin/droiddeck-steam-shortcuts" to "usr/local/bin/droiddeck-steam-shortcuts",
             // Asks the app for an Epic game's sign-in code at launch, from the compat tool (StoreLaunchRequests).
             "usr/local/bin/droiddeck-store-launch" to "usr/local/bin/droiddeck-store-launch",

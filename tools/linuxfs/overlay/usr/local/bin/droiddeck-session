@@ -985,6 +985,9 @@ BUSCONF
         /usr/local/bin/droiddeck-steam-desktop-ui &
         desktop_ui_pid=$!
       fi
+      # Keep Valve's optional webhelper CPU pinning from aborting browser startup.
+      PATH="/usr/local/libexec/droiddeck-steam:$PATH" \
+      BL_STEAM_WEBHELPER="$steam_root/steamrtarm64/steamwebhelper" \
       "$steam_root/steamrtarm64/steam" "${_bl_ui[@]}" "${_bl_cdp[@]}" "${_bl_lang[@]}" -clientbeta "$steam_channel" \
         -no-cef-sandbox -cef-force-gpu -cef-ozone-platform=x11 \
         -cef-use-gl=angle "-cef-use-angle=$bl_steam_angle" "$@"
