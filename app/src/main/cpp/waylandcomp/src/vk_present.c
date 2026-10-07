@@ -35,6 +35,7 @@ struct vkp_image {
     int in_general;           /* shm images: moved from PREINITIALIZED to GENERAL */
     VkFormat fmt;
     int sampled;              /* created with SAMPLED usage: the alpha pass can read it */
+    AHardwareBuffer *android_buffer;
 };
 
 static ANativeWindow *g_window;  /* the window frames go to; compositor thread only */
@@ -44,6 +45,7 @@ static VkInstance g_inst;
 static VkPhysicalDevice g_pd;
 static VkDevice g_dev;
 static VkQueue g_queue;
+static PFN_vkGetAndroidHardwareBufferPropertiesANDROID g_ahb_properties;
 static uint32_t g_qfam;
 static VkCommandPool g_pool;
 /* One command buffer + acquire/render-done semaphore pair per PRESENT. A scene frame is one
@@ -464,7 +466,7 @@ static int dev_init(void) {
     g_vk.GetPhysicalDeviceMemoryProperties(g_pd, &g_memprops);
 
     /* Verify the dmabuf-import extensions are present, and log any that are missing. */
-    const char *dev_exts[7] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_external_memory_fd",
+    const char *dev_exts[9] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_external_memory_fd",
                                "VK_EXT_external_memory_dma_buf", "VK_EXT_image_drm_format_modifier",
                                "VK_KHR_image_format_list", NULL, NULL};
     uint32_t n_dev_exts = 5;
@@ -485,6 +487,13 @@ static int dev_init(void) {
      * back to waiting for them on the CPU without it. */
     const int want_sem_fd = has_ext(exts, ne, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
     if (want_sem_fd) dev_exts[n_dev_exts++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+    const int want_ahb = !g_library_name &&
+        has_ext(exts, ne, VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME) &&
+        has_ext(exts, ne, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
+    if (want_ahb) {
+        dev_exts[n_dev_exts++] = VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME;
+        dev_exts[n_dev_exts++] = VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME;
+    }
     free(exts);
 
     float prio = 1.0f;
@@ -511,6 +520,9 @@ static int dev_init(void) {
     }
     vk_loader_load_device(g_dev);
     g_vk.GetDeviceQueue(g_dev, g_qfam, 0, &g_queue);
+    if (want_ahb)
+        g_ahb_properties = (PFN_vkGetAndroidHardwareBufferPropertiesANDROID)
+            g_vk.GetDeviceProcAddr(g_dev, "vkGetAndroidHardwareBufferPropertiesANDROID");
     if (want_sem_fd) {
         g_import_sem_fd = (PFN_vkImportSemaphoreFdKHR)g_vk.GetDeviceProcAddr(g_dev, "vkImportSemaphoreFdKHR");
         VkSemaphoreCreateInfo wsci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -949,7 +961,97 @@ struct vkp_image *vkp_image_from_dmabuf(int fd, uint32_t drm_format, uint64_t mo
     return vkp_image_import_dmabuf(fd, drm_format, modifier, w, h, stride, offset, 0);
 }
 
+/* android_wlegl's producer waits for its GPU fence before committing. Return ownership
+ * after sampling; render_impl/pass_copy_to wait for our fence before Wayland can release it. */
+static void release_android_image(VkCommandBuffer cmd, struct vkp_image *img) {
+    if (!img || !img->android_buffer) return;
+    VkImageMemoryBarrier release = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = g_qfam, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
+        .image = img->image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT};
+    g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &release);
+}
+
+static void release_android_draws(VkCommandBuffer cmd, const struct vkp_draw *draws, int count) {
+    for (int i = 0; i < count; i++) {
+        int seen = 0;
+        for (int j = 0; j < i; j++) if (draws[j].img == draws[i].img) { seen = 1; break; }
+        if (!seen) release_android_image(cmd, draws[i].img);
+    }
+}
+
 int vkp_image_is_dmabuf(const struct vkp_image *img) { return img && img->dmabuf && !img->blit_dst; }
+
+int vkp_android_buffer_supported(void) {
+    return dev_init() == 0 && g_ahb_properties != NULL;
+}
+
+struct vkp_image *vkp_image_from_android_buffer(AHardwareBuffer *buffer) {
+    if (!buffer || !vkp_android_buffer_supported()) return NULL;
+    AHardwareBuffer_Desc desc;
+    AHardwareBuffer_describe(buffer, &desc);
+    if (!desc.width || !desc.height || desc.layers != 1 ||
+        (desc.usage & (AHARDWAREBUFFER_USAGE_PROTECTED_CONTENT | AHARDWAREBUFFER_USAGE_GPU_MIPMAP_COMPLETE)) ||
+        !(desc.usage & AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE)) return NULL;
+    VkAndroidHardwareBufferFormatPropertiesANDROID format = {
+        .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID};
+    VkAndroidHardwareBufferPropertiesANDROID props = {
+        .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID, .pNext = &format};
+    VkResult result = g_ahb_properties(g_dev, buffer, &props);
+    if (result != VK_SUCCESS ||
+        (format.format != VK_FORMAT_R8G8B8A8_UNORM && format.format != VK_FORMAT_R8G8B8A8_SRGB &&
+         format.format != VK_FORMAT_B8G8R8A8_UNORM && format.format != VK_FORMAT_B8G8R8A8_SRGB) ||
+        !props.memoryTypeBits ||
+        !(format.formatFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
+        LOGE("android_wlegl: unsupported Android buffer import (%s, format %d)",
+             vk_result_name(result), format.format);
+        return NULL;
+    }
+    struct vkp_image *img = calloc(1, sizeof(*img));
+    if (!img) return NULL;
+    img->w = (int)desc.width; img->h = (int)desc.height;
+    img->fmt = format.format; img->dmabuf = 1;
+    const VkFormatFeatureFlags sampled = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                         VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    img->sampled = (format.formatFeatures & sampled) == sampled;
+    VkExternalMemoryImageCreateInfo external = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
+    VkImageCreateInfo create = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = &external,
+        .imageType = VK_IMAGE_TYPE_2D, .format = img->fmt,
+        .extent = {desc.width, desc.height, 1}, .mipLevels = 1, .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | (img->sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0),
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    result = g_vk.CreateImage(g_dev, &create, NULL, &img->image);
+    if (result != VK_SUCCESS) goto fail;
+    /* AHB image requirements are not queryable before binding. The AHB query supplies them. */
+    uint32_t memory_type = 0;
+    while (!(props.memoryTypeBits & (1u << memory_type))) memory_type++;
+    VkImportAndroidHardwareBufferInfoANDROID import = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID, .buffer = buffer};
+    VkMemoryDedicatedAllocateInfo dedicated = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .pNext = &import, .image = img->image};
+    VkMemoryAllocateInfo allocate = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &dedicated,
+        .allocationSize = props.allocationSize, .memoryTypeIndex = memory_type};
+    result = g_vk.AllocateMemory(g_dev, &allocate, NULL, &img->mem);
+    if (result != VK_SUCCESS) goto fail;
+    result = g_vk.BindImageMemory(g_dev, img->image, img->mem, 0);
+    if (result != VK_SUCCESS) goto fail;
+    AHardwareBuffer_acquire(buffer);
+    img->android_buffer = buffer;
+    return img;
+fail:
+    LOGE("android_wlegl: Vulkan buffer import failed: %s", vk_result_name(result));
+    vkp_image_destroy(img);
+    return NULL;
+}
 
 struct vkp_image *vkp_image_import_dmabuf(int fd, uint32_t drm_format, uint64_t modifier, int w, int h,
                                           uint32_t stride, uint32_t offset, int as_blit_dst) {
@@ -1106,6 +1208,7 @@ void vkp_image_destroy(struct vkp_image *img) {
         if (img->image) g_vk.DestroyImage(g_dev, img->image, NULL);
         if (img->mem) g_vk.FreeMemory(g_dev, img->mem, NULL);
     }
+    if (img->android_buffer) AHardwareBuffer_release(img->android_buffer);
     free(img);
 }
 
@@ -1625,7 +1728,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
         if (seen || !im) continue;
         if (im->dmabuf) {
             bars[nb++] = (VkImageMemoryBarrier){
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = im->android_buffer ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
                 .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
                 .image = im->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
@@ -1696,6 +1799,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
         drawn++;
     }
 
+    release_android_draws(cmd, draws, n);
     int ngen = 0;
     VkImage gens[VKP_FG_MAX_GENERATIONS] = {VK_NULL_HANDLE};
     VkImage result = scene_img;
@@ -1915,7 +2019,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(g_cmd, &bi);
     VkImageMemoryBarrier acq[2] = {
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = src->android_buffer ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          .srcQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
@@ -1940,6 +2044,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
     g_vk.CmdBlitImage(g_cmd, src->image,
                       src->dmabuf ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL,
                       dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    release_android_image(g_cmd, src);
     VkImageMemoryBarrier rel = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = g_qfam,
@@ -2016,7 +2121,7 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(cmd, &bi);
     VkImageMemoryBarrier acq[2] = {
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = src->android_buffer ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          .srcQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
@@ -2151,7 +2256,7 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
         if (seen || !im) continue;
         if (im->dmabuf) {
             bars[nb++] = (VkImageMemoryBarrier){
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = im->android_buffer ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
                 .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
                 .image = im->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
@@ -2196,6 +2301,7 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
         if (vkp_effects_active()) vkp_effects_set_formats(VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM);
     }
 
+    release_android_draws(cmd, draws, n);
     int mapped_w = (int)(scene_w * g_map.kx + 0.5f), mapped_h = (int)(scene_h * g_map.ky + 0.5f);
     g_pass.rw = scene_w; g_pass.rh = scene_h;
     g_pass.result = vkp_effects_run(cmd, scene_img, scene_w, scene_h, mapped_w, mapped_h,

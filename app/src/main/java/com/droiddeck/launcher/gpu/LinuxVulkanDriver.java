@@ -51,6 +51,7 @@ public final class LinuxVulkanDriver {
      * back to the runtime's own driver for it.
      */
     public static String optionLabel(Context context, String value) {
+        if (SystemVulkanDriver.usesDefault(value)) return "System PowerVR (libhybris, experimental)";
         if (value == null || value.isEmpty()) return "Runtime default (built into the runtime)";
         LinuxVulkanDriverManager m = new LinuxVulkanDriverManager(context);
         if (!m.isInstalled(value)) return value + " (imported, missing - uses the runtime default)";
@@ -63,6 +64,7 @@ public final class LinuxVulkanDriver {
      * An id whose import is gone resolves to null rather than failing the launch.
      */
     public static String resolveIcdPath(Context context, String value) {
+        if (SystemVulkanDriver.usesDefault(value)) return SystemVulkanDriver.icdPath(context);
         if (value == null || value.isEmpty()) return null;
         LinuxVulkanDriverManager m = new LinuxVulkanDriverManager(context);
         String icd = m.getIcdPath(value);

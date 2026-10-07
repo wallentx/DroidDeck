@@ -2150,4 +2150,5 @@
         <item quantity="one">%1$d already in Games</item>
         <item quantity="other">%1$d already in Games</item>
     </plurals>
+    <string name="gpuinfo_powervr_experimental">Experimental PowerVR: system driver through libhybris</string>
 </resources>

@@ -438,6 +438,29 @@ jobs:
           restore-keys: |
             cxx-${{ env.NDK_VERSION }}-
 
+      - name: Cache the PowerVR Linux driver wrapper
+        id: hybris
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hybris-runtime
+          key: hybris-runtime-v1-${{ hashFiles('tools/hybris/source.env', 'tools/hybris/build_runtime.sh', 'tools/hybris/powervr-hal-version.patch') }}
+
+      - name: Build the PowerVR Linux driver wrapper
+        if: steps.hybris.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman patchelf zstd >/dev/null
+          bash tools/hybris/build_runtime.sh "$RUNNER_TEMP/hybris-runtime"
+
+      - name: Bundle the PowerVR Linux driver wrapper
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/hybris-runtime"
+          printf '%s  runtime.tzst\n' "$(cat version.txt)" | sha256sum -c -
+          mkdir -p "$GITHUB_WORKSPACE/app/src/main/assets/hybris"
+          cp runtime.tzst version.txt "$GITHUB_WORKSPACE/app/src/main/assets/hybris/"
+
       - name: Build
         id: build
         env:
@@ -449,6 +472,7 @@ jobs:
           ./gradlew assembleRelease --console=plain -PndkVersion="$NDK_VERSION" 2>&1 | tee /tmp/build.log
           python3 tools/release/check_session_assets.py app/build/outputs/apk/release/app-release.apk
           python3 tools/release/runtime_inputs.py apk app/build/outputs/apk/release/app-release.apk
+          python3 tools/hybris/check_runtime.py app/build/outputs/apk/release/app-release.apk
 
       - name: Check the store engines' library
         # The exports Kotlin binds must be in the apk's libdroiddeckstores.so, or the stores fail on

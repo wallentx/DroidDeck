@@ -2,7 +2,9 @@
 
 An offscreen Vulkan draw passed on Pixel 11 Pro XL / Tensor G6 / PowerVR
 C-Series CXTP-48-1536 MC1 on 2026-10-07, without AVF. This is a tested reuse
-candidate; DroidDeck's launch and window presentation paths are not integrated.
+candidate. The experimental integration selects it automatically for PowerVR,
+keeps its libraries separate from the rootfs, and presents Android buffers through
+the existing DroidDeck compositor. Steam/window validation is still in progress.
 
 ## Inputs
 
@@ -64,17 +66,26 @@ Termux's command service and Aether's glibc launcher, UID 10445, SELinux domain
 `runas_app`. It does not establish behavior under DroidDeck's own app identity.
 The compatibility layer was disabled: BC emulation and games remain untested.
 
-## Presentation integration still needed
+## Experimental presentation integration
 
 ARLinux's existing `android_wlegl` protocol exchanges Android native handles
 and server-allocated buffers. DroidDeck already handles Android Hardware
-Buffers, but currently advertises its different `banner_ahb_v1` protocol over
-its DMA-BUF buffer path. Those protocols are not interchangeable.
+Buffers through its `banner_ahb_v1` protocol. The new `android_wlegl` adapter
+imports native handles using Android's buffer API, then imports those buffers
+into the system Vulkan device. It does not infer a DMA-BUF layout from vendor
+metadata. The original Adreno path remains separate.
 
-The next integration should adapt the existing buffer protocol and reuse
-DroidDeck's compositor, input and lifecycle handling. It should not enable a
-PowerVR support claim until a real client window presents and releases buffers
-correctly. No new VM transport or GPU driver is required by this offscreen result.
+The producer waits for GPU completion before committing; DroidDeck acquires
+and returns buffer ownership and waits for its own render fence before releasing
+the Wayland buffer. The compositor's existing surface and input lifecycle is reused.
+End-to-end window and Steam testing remains required before calling this tested
+support. No AVF transport is used by this candidate.
+
+`build_runtime.sh` builds the pinned upstream wrapper and our HAL-version patch
+on CI. The APK carries an isolated runtime archive, licenses, source and patch.
+`check_runtime.py` verifies the archive, AArch64 libraries and provenance before
+upload. Explicit imported driver choices are preserved; Auto selects this wrapper
+only on PowerVR devices.
 
 ## Local evidence
 
