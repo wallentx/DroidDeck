@@ -1,5 +1,9 @@
 # PowerVR through AVF: prerequisite probe
 
+The preferred direct-driver candidate is maintained on
+[`dev` in `tools/hybris`](https://github.com/wallentx/DroidDeck/tree/dev/tools/hybris).
+This branch retains the separate AVF experiments.
+
 This is the first validation gate for an AVF session backend. **DroidDeck does
 not yet run Steam through AVF.** The existing Adreno runtime remains the only
 integrated session backend.
