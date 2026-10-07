@@ -35,6 +35,24 @@ On 2026-10-06, Pixel 11 Pro XL / Tensor G6 / Android 17 build
 The stock driver reports no BC texture compression. Game compatibility still
 depends on the capabilities exposed by Gfxstream and the guest driver.
 
+### Device prerequisite result
+
+The diskless device gate **passed on 2026-10-07 UTC**, using source commit
+`4a68a99a9d2fadb4c8a73e84686e5921f5b14fc0` from the
+[successful CI run](https://github.com/wallentx/DroidDeck/actions/runs/37554424992).
+
+| Check | Device result |
+| --- | --- |
+| DRM driver | `virtio_gpu` with a render node |
+| Capsets | `0x208`: IDs 3 and 9 |
+| Blob resources / context initialization | Both enabled |
+| Gfxstream Vulkan context creation | Passed |
+| Probe lifetime | Exited; no probe VM remained |
+
+The existing Arch VM remained cleanly stopped with zero sessions. Its kernel
+and disk were not replaced. **Vulkan drawing and Steam remain untested**; this
+result verifies the GPU transport prerequisites only.
+
 ## Build and run
 
 1. Run **AVF GPU prerequisite probe** in GitHub Actions. It uses the pinned
@@ -63,8 +81,8 @@ before success. QEMU's 2D test cannot satisfy that device gate.
 
 ## Remaining integration gates
 
-1. Run this diskless probe on the graphics kernel, then make a reversible kernel
-   upgrade using Termux-Aether's existing maintenance/backup mechanism.
+1. With the diskless device gate passed, make a reversible kernel upgrade using
+   Termux-Aether's existing maintenance/backup mechanism.
 2. Enable the GPU configuration in the VM owner and verify `vulkaninfo --summary`
    and a rendered test with `vulkan-gfxstream` inside Arch. Reject CPU renderers.
 3. Connect VM ownership, display, input, audio and session lifetime to DroidDeck;
