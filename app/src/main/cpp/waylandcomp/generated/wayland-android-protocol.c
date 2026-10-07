@@ -102,4 +102,3 @@ WL_PRIVATE const struct wl_interface android_wlegl_server_buffer_handle_interfac
 	0, NULL,
 	4, android_wlegl_server_buffer_handle_events,
 };
-
