@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Process;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.system.OsConstants;
 import android.system.StructStat;
 import android.system.StructUtsname;
 import com.droiddeck.launcher.session.SessionPrefs;
@@ -284,7 +285,11 @@ public final class LinuxRuntime {
                 bind(cmd, fake.getPath() + ":" + entry[1]);
             }
         }
-        bindGpuNode(context, cmd);
+        if (com.droiddeck.launcher.gpu.SystemVulkanDriver.isPowerVr()) {
+            bindPowerVrGpuNode(context, cmd);
+        } else {
+            bindGpuNode(context, cmd);
+        }
         bindAdrenoStats(cmd, extraBinds);
         bindCpuTemps(cmd, root);
         if (extraBinds != null) {
@@ -293,6 +298,30 @@ public final class LinuxRuntime {
         List<String> specs = new ArrayList<>();
         for (int i = 0; i + 1 < cmd.size(); i += 2) specs.add(cmd.get(i + 1));
         return specs;
+    }
+
+    /**
+     * Tensor's render node is accessible directly, but Android denies listing its parent
+     * directory. libdrm enumerates that directory even when given the device number. Expose
+     * the real node through a listable private directory; retain its real sysfs identity.
+     */
+    private static void bindPowerVrGpuNode(Context context, List<String> cmd) {
+        if (new File("/dev/dri").list() != null) return;
+        String node = "/dev/dri/renderD128";
+        File dri = new File(context.getCacheDir(), "powervr-drm/dri");
+        try {
+            StructStat st = Os.stat(node);
+            if (!OsConstants.S_ISCHR(st.st_mode)
+                    || !Os.access(node, OsConstants.R_OK | OsConstants.W_OK)) return;
+            if (!dri.isDirectory() && !dri.mkdirs()) return;
+            new File(dri, "renderD128").createNewFile();
+        } catch (IOException | ErrnoException e) {
+            android.util.Log.w("LinuxRuntime", "Cannot expose the PowerVR render node", e);
+            return;
+        }
+        bind(cmd, dri.getPath() + ":/dev/dri");
+        bind(cmd, node + ":" + node);
+        android.util.Log.i("LinuxRuntime", "PowerVR: exposing real renderD128 through a listable directory");
     }
 
     /**
