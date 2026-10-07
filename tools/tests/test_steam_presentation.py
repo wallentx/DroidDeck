@@ -46,14 +46,17 @@ class SteamPresentationTest(unittest.TestCase):
     def test_default_keeps_vulkan(self):
         result = self.launch()
         self.assertIn("-cef-use-angle=vulkan", result["args"])
+        self.assertNotIn("-cef-disable-gpu-compositing", result["args"])
         self.assertIsNone(result["disable"])
         self.assertIsNone(result["kopper"])
 
-    def test_system_powervr_uses_gpu_gl_presentation(self):
+    def test_system_powervr_keeps_gpu_gl_with_software_web_compositing(self):
         result = self.launch("1")
         self.assertIn("-cef-use-angle=gl", result["args"])
         self.assertIn("-cef-use-gl=angle", result["args"])
         self.assertIn("-cef-force-gpu", result["args"])
+        self.assertIn("-cef-disable-gpu-compositing", result["args"])
+        self.assertNotIn("-cef-disable-gpu", result["args"])
         self.assertEqual(result["disable"], "1")
         self.assertEqual(result["kopper"], "true")
         self.assertEqual(result["args"][-1], "steam://open/main")
@@ -61,6 +64,7 @@ class SteamPresentationTest(unittest.TestCase):
     def test_disabled_option_preserves_existing_environment(self):
         result = self.launch("0", {"DISABLE_GAMESCOPE_WSI": "0", "LIBGL_KOPPER_DISABLE": "false"})
         self.assertIn("-cef-use-angle=vulkan", result["args"])
+        self.assertNotIn("-cef-disable-gpu-compositing", result["args"])
         self.assertEqual(result["disable"], "0")
         self.assertEqual(result["kopper"], "false")
 
