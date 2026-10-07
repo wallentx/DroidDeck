@@ -143,6 +143,10 @@ android {
             minifyEnabled false
             signingConfig signingConfigs.testkey
         }
+        configureEach {
+            // CI supplies the PR head SHA even when building its merge with main.
+            versionNameSuffix = sourceCommit ? "-${sourceCommit.take(7)}" : ''
+        }
     }
 
     lint {

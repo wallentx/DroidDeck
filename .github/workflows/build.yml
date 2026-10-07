@@ -29,6 +29,7 @@ concurrency:
 
 env:
   PRELOAD_CACHE_VERSION: v3
+  BUILD_ASSETS_REPOSITORY: ${{ vars.BUILD_ASSETS_REPOSITORY || 'Droid-Deck/DroidDeck' }}
 
 jobs:
   build:
@@ -213,7 +214,7 @@ jobs:
           done
           if [ -f tools/gamescope/release.env ]; then
             . tools/gamescope/release.env
-            gh release download "${GAMESCOPE_TAG}" -R "${GAMESCOPE_REPO:-${GITHUB_REPOSITORY}}" -p gamescope.tzst -O gamescope.tzst
+            gh release download "${GAMESCOPE_TAG}" -R "${GAMESCOPE_REPO:-$BUILD_ASSETS_REPOSITORY}" -p gamescope.tzst -O gamescope.tzst
             echo "${GAMESCOPE_SHA256}  gamescope.tzst" | sha256sum -c -
             tar --use-compress-program=unzstd -xf gamescope.tzst -C "$D"
             test -f "$D/usr/local/bin/gamescope"
@@ -516,6 +517,35 @@ jobs:
           grep -qi "CN=Android, OU=Android, O=Android" /tmp/sig.txt \
             || { echo "::error::apk is not signed with the AOSP testkey"; exit 1; }
 
+      - name: Name the APK with its version and commit
+        id: apk-package
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          VERSION=$("$TOOLS/aapt" dump badging "$APK" | sed -n "s/^package:.* versionName='\([^']*\)'.*/\1/p")
+          SHORT_SHA=${DROIDDECK_SOURCE_COMMIT:0:7}
+          [[ "$SHORT_SHA" =~ ^[0-9a-f]{7}$ && "$VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || {
+            echo '::error::Invalid APK version or source commit'; exit 1;
+          }
+          [[ "$VERSION" == *-"$SHORT_SHA" ]] || {
+            echo "::error::APK version '$VERSION' does not end with source commit '$SHORT_SHA'"; exit 1;
+          }
+          mkdir -p apk-output
+          cp "$APK" "apk-output/DroidDeck-$VERSION.apk"
+          (cd apk-output && sha256sum -- *.apk > SHA256SUMS)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the test-signed APK
+        id: apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: droiddeck-apk
+          path: apk-output/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
       - name: Report on the pull request
         if: always() && github.event_name == 'pull_request'
         continue-on-error: true
@@ -523,8 +553,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          BUILD_OUTCOME: ${{ job.status }}
+          ARTIFACT_URL: ${{ steps.apk.outputs.artifact-url }}
+          APK_VERSION: ${{ steps.apk-package.outputs.version }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          UPSTREAM_RELEASES: ${{ github.repository == 'Droid-Deck/DroidDeck' }}
         run: |
           set -uo pipefail
           MARK="<!-- droiddeck-pr-build -->"
@@ -538,20 +571,22 @@ jobs:
               success)
                 echo "###  Build passed"
                 echo
-                echo "The \`droiddeck-apk\` artifact is [on this run]($RUN_URL), signed with the public test key."
+                echo "[Download DroidDeck $APK_VERSION]($ARTIFACT_URL) (\`droiddeck-apk\` artifact), signed with the public test key."
                 echo
-                if [ "$SAME_REPO" = true ]; then
-                  echo "A release-signed tester build that installs over Stable or Preview is being published now and will appear in DroidDeck's **Test builds** list. Label the PR \`no-test-build\` to skip that."
-                else
-                  echo "**Maintainer:** add the \`publish-test\` label to publish a release-signed tester build that installs over Stable or Preview and appears in DroidDeck's **Test builds** list. The label is removed automatically after publishing."
+                if [ "$UPSTREAM_RELEASES" = true ]; then
+                  if [ "$SAME_REPO" = true ]; then
+                    echo "A release-signed tester build that installs over Stable or Preview is being published now and will appear in DroidDeck's **Test builds** list. Label the PR \`no-test-build\` to skip that."
+                  else
+                    echo "**Maintainer:** add the \`publish-test\` label to publish a release-signed tester build that installs over Stable or Preview and appears in DroidDeck's **Test builds** list. The label is removed automatically after publishing."
+                  fi
+                  echo
+                  echo "Fallback: [open **PR Release Publish**]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/pr-release-publish.yml) on \`main\` and enter PR \`$PR\`."
                 fi
-                echo
-                echo "Fallback: [open **PR Release Publish**]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/pr-release-publish.yml) on \`main\` and enter PR \`$PR\`."
                 ;;
               failure)
                 echo "### ERROR: Build failed"
                 echo
-                echo "The compiler's errors ([full log]($RUN_URL)):"
+                echo "Build or validation errors ([full log]($RUN_URL)):"
                 echo
                 echo '```'
                 { grep -E '^e: |^w: .*error|error:|CMake Error|fatal error|ninja: error|FAILED|What went wrong|Execution failed for task|Unresolved reference|Type mismatch|Unresolved' /tmp/build.log 2>/dev/null \
@@ -582,17 +617,9 @@ jobs:
             gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -F body=@/tmp/pr-report.md >/dev/null
           fi
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: droiddeck-apk
-          path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
   sign:
     needs: build
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.repository == 'Droid-Deck/DroidDeck' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       actions: read
@@ -610,7 +637,7 @@ jobs:
   # DISCORD_BUILDS_WEBHOOK is the channel's webhook URL.
   announce:
     needs: [build, sign]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.repository == 'Droid-Deck/DroidDeck' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
