@@ -2,8 +2,8 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
-#include <libdrm/drm.h>
-#include <libdrm/virtgpu_drm.h>
+#include <drm/drm.h>
+#include <drm/virtgpu_drm.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +13,10 @@
 #include <sys/reboot.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+/* Virtio-GPU protocol ID; older Linux UAPI headers expose the context ioctl but
+ * do not yet give this capset a symbolic name. It is not a Vulkan API version. */
+enum { GFXSTREAM_VULKAN_CAPSET = 3 };
 
 static void finish(int passed) {
     puts(passed ? "DROIDDECK_VIRTGPU_PASS_V1" : "DROIDDECK_VIRTGPU_FAIL_V1");
@@ -90,11 +94,11 @@ int main(void) {
     }
     printf("capsets=0x%llx resource_blob=%llu context_init=%llu\n", (unsigned long long)capsets,
            (unsigned long long)blobs, (unsigned long long)contexts);
-    if (!(capsets & (1ULL << VIRTGPU_DRM_CAPSET_GFXSTREAM_VULKAN)) || !blobs || !contexts)
+    if (!(capsets & (1ULL << GFXSTREAM_VULKAN_CAPSET)) || !blobs || !contexts)
         finish(0);
     struct drm_virtgpu_context_set_param param = {
         .param = VIRTGPU_CONTEXT_PARAM_CAPSET_ID,
-        .value = VIRTGPU_DRM_CAPSET_GFXSTREAM_VULKAN,
+        .value = GFXSTREAM_VULKAN_CAPSET,
     };
     struct drm_virtgpu_context_init init = {
         .num_params = 1,

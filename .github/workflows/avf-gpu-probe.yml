@@ -28,7 +28,7 @@ jobs:
       - name: Install build and QEMU tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y gcc-aarch64-linux-gnu make bc bison flex libssl-dev libelf-dev libdrm-dev qemu-system-arm
+          sudo apt-get install -y gcc-aarch64-linux-gnu linux-libc-dev-arm64-cross make bc bison flex libssl-dev libelf-dev qemu-system-arm
       - name: Test probe result handling and framework compatibility
         run: |
           mkdir -p "$RUNNER_TEMP/gpu-classes"
@@ -62,9 +62,7 @@ jobs:
           key: ${{ steps.kernel.outputs.cache-primary-key }}
       - name: Build diskless guest test
         run: |
-          mkdir -p "$RUNNER_TEMP/drm-headers/libdrm"
-          cp /usr/include/libdrm/*.h "$RUNNER_TEMP/drm-headers/libdrm/"
-          aarch64-linux-gnu-gcc -static -O2 -Wall -Wextra -Werror -I"$RUNNER_TEMP/drm-headers" tools/avf/probe-init.c -o guest-out/probe-init
+          aarch64-linux-gnu-gcc -static -O2 -Wall -Wextra -Werror tools/avf/probe-init.c -o guest-out/probe-init
           python3 aether-source/guest/arch/virtiofs-probe/build_initramfs.py guest-out/probe-init guest-out/probe-initramfs.cpio.gz
       - name: Verify kernel enumeration using QEMU's 2D GPU
         run: |
