@@ -307,7 +307,7 @@ index ffad695..ffc8e28 100644
  	if ( oTimingSlot )
  		g_CompositeTiming.pending.back().ulSeqNo = sequence;
 diff --git a/src/rendervulkan.hpp b/src/rendervulkan.hpp
-index fa519db..618fa6a 100644
+index fa519db..674a3b4 100644
 --- a/src/rendervulkan.hpp
 +++ b/src/rendervulkan.hpp
 @@ -162,7 +162,7 @@ public:
@@ -330,7 +330,15 @@ index fa519db..618fa6a 100644
  
  	uint32_t nOutImage; // swapchain index in nested mode, or ping/pong between two RTs
  	std::vector<gamescope::OwningRc<CVulkanTexture>> outputImages;
-@@ -862,6 +864,8 @@ public:
+@@ -756,6 +758,7 @@ static inline uint32_t div_roundup(uint32_t x, uint32_t y)
+ 	VK_FUNC(CreateDescriptorPool) \
+ 	VK_FUNC(CreateDescriptorSetLayout) \
+ 	VK_FUNC(CreateFence) \
++	VK_FUNC(DestroyFence) \
+ 	VK_FUNC(CreateGraphicsPipelines) \
+ 	VK_FUNC(CreateImage) \
+ 	VK_FUNC(CreateImageView) \
+@@ -862,6 +865,8 @@ public:
  	inline VkPipelineLayout pipelineLayout() {return m_pipelineLayout;}
  	inline int drmRenderFd() {return m_drmRendererFd;}
  	inline bool supportsModifiers() {return m_bSupportsModifiers;}
@@ -339,7 +347,7 @@ index fa519db..618fa6a 100644
  	inline bool hasDrmPrimaryDevId() {return m_bHasDrmPrimaryDevId;}
  	inline dev_t primaryDevId() {return m_drmPrimaryDevId;}
  	inline bool supportsFp16() {return m_bSupportsFp16;}
-@@ -930,6 +934,8 @@ protected:
+@@ -930,6 +935,8 @@ protected:
  	uint32_t m_uVendorID = 0;
  	bool m_bHasDrmPrimaryDevId = false;
  	bool m_bSupportsModifiers = false;
