@@ -7,7 +7,8 @@ the APK and does not select a compatibility tool or modify game prefixes.
 The pinned upstream Android/glibc build recognized the instruction but returned
 `ENOSYS` for `getpid` (20) and `memfd_create` (356). The downstream patch enables
 those two existing syscall-table mappings and implements `read`, `write`, and
-`close` with libc calls and Linux negative-errno results. Existing syscall-user-
+`close` with libc calls and Linux negative-errno results. `open` uses Box64's
+existing path wrapper and x86-to-native flag conversion. Existing syscall-user-
 dispatch handling remains before these handlers. All other unsupported calls
 retain their existing behavior. This build uses `BOX32=0`; its patch does not
 cover the separate Box32 implementation.
@@ -37,7 +38,8 @@ The syscall regression passes inside DroidDeck at the explicit low address.
 `int80` returns the failing stage as its exit status: 1 PID agreement; 2 memory
 file creation and pointer truncation; 3 write; 4 seek/read and content; 5 close
 and `EBADF`; 6 invalid flags/`EINVAL`; 7 invalid pointer/`EFAULT`; 8 invalid-FD
-read/write; 9 unknown syscall/`ENOSYS`. Zero means all stages passed.
+read/write; 9 unknown syscall/`ENOSYS`; 10 open flags, close-on-exec and I/O; 11 open
+error returns. Zero means all stages passed.
 
 Artifacts contain the binary, patched source archive, exact upstream revision,
 downstream patch, license, checksums and probes. A successful CPU test does not

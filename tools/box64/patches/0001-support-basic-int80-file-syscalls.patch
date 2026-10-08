@@ -1,5 +1,5 @@
 diff --git a/src/emu/x86syscall.c b/src/emu/x86syscall.c
-index 7e831b4..2fc2a97 100755
+index 7e831b4..704e48c 100755
 --- a/src/emu/x86syscall.c
 +++ b/src/emu/x86syscall.c
 @@ -56,7 +56,7 @@ static const scwrap_t syscallwrap[] = {
@@ -20,10 +20,24 @@ index 7e831b4..2fc2a97 100755
      //{ 449, __NR_futex_waitv, 5},
  };
 
-@@ -273,6 +273,21 @@ void EXPORT x86Syscall(x64emu_t *emu)
+@@ -231,6 +231,8 @@ struct i386_user_desc {
+     unsigned int  useable:1;
+ };
+
++int32_t my_open(x64emu_t* emu, void* pathname, int32_t flags, uint32_t mode);
++
+ void EXPORT x86Syscall(x64emu_t *emu)
+ {
+     uint32_t s = R_EAX;
+@@ -273,6 +275,26 @@ void EXPORT x86Syscall(x64emu_t *emu)
              //R_EAX = syscall(__NR_exit, R_EBX);  // the syscall should exit only current thread
              R_EAX = R_EBX; // faking the syscall here, we don't want to really terminate the thread now
              break;
++        case 5: { // sys_open
++            int result = my_open(emu, (void*)(uintptr_t)R_EBX, of_convert(R_ECX), R_EDX);
++            R_EAX = result == -1 ? (uint32_t)-errno : (uint32_t)result;
++            break;
++        }
 +        case 3: // sys_read
 +        case 4: // sys_write
 +        case 6: { // sys_close

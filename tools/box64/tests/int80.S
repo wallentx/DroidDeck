@@ -102,6 +102,47 @@ _start:
     cmp $-38, %eax                /* Unsupported calls must remain ENOSYS. */
     jne failed
 
+    mov $10, %r12d
+    lea null_path(%rip), %rbx
+    mov $0x88001, %ecx            /* O_WRONLY | O_LARGEFILE | O_CLOEXEC */
+    xor %edx, %edx
+    mov $5, %eax
+    int $0x80
+    test %eax, %eax
+    js failed
+    mov %eax, %r14d
+    mov %eax, %edi
+    mov $1, %esi                  /* F_GETFD through the native ABI */
+    mov $72, %eax
+    syscall
+    test $1, %eax                 /* FD_CLOEXEC survived flag conversion */
+    jz failed
+    mov %r14d, %ebx
+    lea payload(%rip), %rcx
+    mov $3, %edx
+    mov $4, %eax
+    int $0x80
+    cmp $3, %eax
+    jne failed
+    mov $6, %eax
+    int $0x80
+    test %eax, %eax
+    jne failed
+
+    mov $11, %r12d
+    lea missing_path(%rip), %rbx
+    xor %ecx, %ecx
+    xor %edx, %edx
+    mov $5, %eax
+    int $0x80
+    cmp $-2, %eax                 /* ENOENT */
+    jne failed
+    xor %ebx, %ebx
+    mov $5, %eax
+    int $0x80
+    cmp $-14, %eax                /* EFAULT for a null path */
+    jne failed
+
     mov $1, %eax
     mov $1, %edi
     lea passed(%rip), %rsi
@@ -115,9 +156,11 @@ exit:
     mov $60, %eax
     syscall
 .section .rodata
+null_path: .asciz "/dev/null"
+missing_path: .asciz "/droiddeck-box64-test-file-does-not-exist"
 name: .asciz "droiddeck-compat-syscall-test"
 payload: .ascii "FEX"
-passed: .ascii "PASS: int80 getpid, memfd, IO, errors, pointer truncation\n"
+passed: .ascii "PASS: int80 getpid, memfd, open, IO, errors, pointer truncation\n"
 .set passed_len, .-passed
 .section .bss
 buffer: .skip 3
