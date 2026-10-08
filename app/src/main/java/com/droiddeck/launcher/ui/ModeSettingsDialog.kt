@@ -67,6 +67,7 @@ class ModeSettings(
     val upscaleSharpness: Int = 75,
     val touchMode: String,
     val suspendPolicy: String,
+    val steamDownloadsInBackground: Boolean = false,
     val pipSupported: Boolean = false,
     val pipAutoEnter: Boolean = false,
     /** Steam only. */
@@ -74,7 +75,6 @@ class ModeSettings(
     /** Steam only: whether single and double Back actions are swapped. */
     val backActionsInverted: Boolean = false,
     val directAudio: Boolean?,
-    val clientDirectAudio: Boolean = true,
     val mic: Boolean?,
     val renderer: String?,
     val gameStorage: String? = null,
@@ -134,11 +134,11 @@ class ModeSettingsActions(
     val onUpscaleSharpness: (Int) -> Unit = {},
     val onTouch: (String) -> Unit,
     val onSuspendPolicy: (String) -> Unit,
+    val onSteamDownloadsInBackground: (Boolean) -> Unit = {},
     val onPipAutoEnter: (Boolean) -> Unit = {},
     val onOsc: (String) -> Unit,
     val onBackActionsInverted: (Boolean) -> Unit = {},
     val onDirectAudio: (Boolean) -> Unit,
-    val onClientDirectAudio: (Boolean) -> Unit = {},
     val onMic: (Boolean) -> Unit,
     val onRenderer: (String) -> Unit,
     val onGameStorage: (path: String, label: String) -> Unit = { _, _ -> },
@@ -302,10 +302,17 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
                         SessionPrefs.SUSPEND_AUTO to stringResource(R.string.common_auto),
                         SessionPrefs.SUSPEND_MANUAL to stringResource(R.string.mode_suspend_manual),
                         SessionPrefs.SUSPEND_NEVER to stringResource(R.string.common_never),
-                    ) + if (steam) listOf(SessionPrefs.SUSPEND_NATIVE to stringResource(R.string.mode_suspend_native)) else emptyList(),
+                    ) + if (steam) listOf(
+                        SessionPrefs.SUSPEND_NATIVE to stringResource(R.string.mode_suspend_native),
+                    ) else emptyList(),
                     s.suspendPolicy,
                     note = stringResource(if (steam) R.string.mode_suspend_steam_note else R.string.mode_suspend_note),
                     onPick = a.onSuspendPolicy,
+                )
+                if (steam && s.suspendPolicy != SessionPrefs.SUSPEND_NEVER) ToggleRow(
+                    host, "background-downloads", stringResource(R.string.mode_background_downloads),
+                    stringResource(R.string.mode_background_downloads_hint),
+                    s.steamDownloadsInBackground, onChange = a.onSteamDownloadsInBackground,
                 )
             }
             if (s.pipSupported) SettingsGroup(stringResource(R.string.pip_title)) {
@@ -477,11 +484,6 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
         }
         if (steam && tab == ModeSettingsTab.AUDIO && s.directAudio != null && s.mic != null) SettingsGroup(stringResource(R.string.mode_audio)) {
             ToggleRow(host, "da", stringResource(R.string.mode_directaudio), stringResource(R.string.mode_directaudio_hint), s.directAudio, onChange = a.onDirectAudio)
-            ChoiceRow(
-                host, "clientAudio", stringResource(R.string.mode_client_audio), stringResource(R.string.mode_client_audio_hint),
-                listOf("classic" to stringResource(R.string.mode_client_audio_classic), "directaudio" to stringResource(R.string.mode_client_audio_direct)), if (s.clientDirectAudio) "directaudio" else "classic",
-                onPick = { id -> a.onClientDirectAudio(id == "directaudio") },
-            )
             ToggleRow(host, "mic", stringResource(R.string.mode_mic), stringResource(R.string.mode_mic_hint), s.mic, onChange = a.onMic)
         }
         if (steam && tab == ModeSettingsTab.GAMES && s.gameStorage != null) SettingsGroup(stringResource(R.string.mode_storage)) {

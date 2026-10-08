@@ -6,6 +6,11 @@ ships (3.16.29, Arch Linux ARM's package, same build options), and staged from t
 The binary's shared-library needs are checked against `runtime-sonames.txt`, the runtime's own
 library list, before anything is published.
 
+The pinned `gamescope-3.16.29-p9-powervr` archive contains the PowerVR fixes below,
+but still carries patch 0113 and does not contain patch 0114. The source patch stack
+omits 0113 and includes 0114. Shipping that focus correction alongside the PowerVR
+fixes requires rebuilding this stack and updating the release tag and checksum.
+
 - `0002-steamcompmgr-fallback-appid-focus.patch` - Armada (armada-os/armada), verbatim.
 - `0009-fix-arm64-steam-night-mode.patch` - Armada, verbatim: the ARM64 client packs the
   night-mode property differently; the slider did nothing.
@@ -38,14 +43,12 @@ library list, before anything is published.
   iconify request is remembered and the window goes back to NormalState before input returns to it,
   then focus is handed over again. `GAMESCOPE_RESTORE_FOCUS_WINDOW` on the root window asks for the
   same restore from outside (the session script's resume watcher).
-
-- `0113-steam-overlay-keeps-game-keyboard-focus.patch` - this app: the Steam client opens the Quick
-  Access Menu and Steam menu over a game with `STEAM_INPUT_FOCUS` 1, which moves X keyboard focus to
-  its overlay; wine then deactivates the game and a fullscreen game minimizes itself, freezing
-  behind the menu instead of running on as on a Steam Deck. Steam's own overlay taking input now
-  keeps keyboard focus on the game, as mode 2 does; its input comes from the controller through
-  Steam Input, not the X keyboard. The pointer warps gamescope makes as input moves to Steam and
-  back are skipped around it, since the game - still taking input - saw them as a mouse jump.
+- `0114-take-override-redirect-from-mapnotify.patch` - upstream (ValveSoftware/gamescope 3829340),
+  verbatim; drop it once the runtime's gamescope includes it. Wine creates a game's window
+  override-redirect and makes it managed before mapping it, which sends no X event. When gamescope
+  read the window's attributes first, it kept the window as override-redirect and left it out of
+  `GAMESCOPE_FOCUSABLE_WINDOWS`, so the client kept its loading screen over the running game
+  (Skyrim SE, A Plague Tale: Innocence, on the games' own Xwayland). MapNotify now refreshes the flag.
 
 - `0120-nested-swapchain-capability-fallback.patch` - this app: nested Vulkan backends
   negotiate presentation IDs/waits and mutable swapchain support. Surfaces lacking mutable
@@ -56,7 +59,7 @@ library list, before anything is published.
   it does not provide measured presentation timestamps. The build runs the capability-policy
   tests in `tests/nested-swapchain.cpp`; actual presentation still needs device validation.
 
-`release.env` may set `GAMESCOPE_REPOSITORY` to fetch a component from a downstream repository
+`release.env` may set `GAMESCOPE_REPO` to fetch a component from a downstream repository
 while retaining the configured source for the other APK assets. The archive remains SHA-256 pinned.
 
 - `0121-powervr-single-pixel-rcas.patch` - this app: select the existing single-pixel
