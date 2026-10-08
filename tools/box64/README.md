@@ -30,6 +30,10 @@ bash tools/box64/tests/build.sh out/probes
 BOX64_NORCFILES=1 out/box64/box64 out/probes/int80
 ```
 
+The probes are linked at 256 MiB: DroidDeck relocated the default 2 MiB
+image above 4 GiB, which invalidated its deliberate 32-bit pointer test.
+The syscall regression passes inside DroidDeck at the explicit low address.
+
 `int80` returns the failing stage as its exit status: 1 PID agreement; 2 memory
 file creation and pointer truncation; 3 write; 4 seek/read and content; 5 close
 and `EBADF`; 6 invalid flags/`EINVAL`; 7 invalid pointer/`EFAULT`; 8 invalid-FD
