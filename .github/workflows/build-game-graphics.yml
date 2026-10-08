@@ -32,9 +32,19 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ pkg-config zstd libvulkan-dev libdrm-dev libxcb1-dev libxcb-shm0-dev libxcb-sync-dev libxcb-dri3-dev libxcb-present-dev libxcb-randr0-dev libx11-dev libx11-xcb-dev libxrandr-dev
+          sudo apt-get install -y cmake ninja-build g++ pkg-config zstd libvulkan-dev libdrm-dev libxcb1-dev libxcb-shm0-dev libxcb-sync-dev libxcb-dri3-dev libxcb-present-dev libxcb-randr0-dev libx11-dev libx11-xcb-dev libxrandr-dev vulkan-validationlayers
       - name: Build pinned X11 WSI layer
         run: bash tools/vulkan-wsi/build.sh out/wsi
+      - name: Collect validation layer for device diagnostics
+        run: |
+          mkdir -p out/validation
+          cp /usr/lib/aarch64-linux-gnu/libVkLayer_khronos_validation.so out/validation/
+          cp /usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json out/validation/
+          cp /usr/share/doc/vulkan-validationlayers/copyright out/validation/LICENSE
+      - uses: actions/upload-artifact@v7
+        with:
+          name: graphics-validation
+          path: out/validation
       - uses: actions/upload-artifact@v7
         with:
           name: graphics-wsi
