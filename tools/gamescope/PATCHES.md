@@ -6,6 +6,13 @@ ships (3.16.29, Arch Linux ARM's package, same build options), and staged from t
 The binary's shared-library needs are checked against `runtime-sonames.txt`, the runtime's own
 library list, before anything is published.
 
+The pinned `gamescope-3.16.29-p10-powervr` archive matches this source patch stack:
+it includes patch 0114 and the PowerVR fixes below, with patch 0113 removed.
+It was built from `51a3b89b00b5b1ae9f1888cd15d80df44af5f66c` in
+[CI run 37835789370](https://github.com/wallentx/DroidDeck/actions/runs/37835789370),
+which passed the nested-swapchain policy test and runtime library dependency check.
+Device validation of this updated focus-fix bundle remains separate.
+
 - `0002-steamcompmgr-fallback-appid-focus.patch` - Armada (armada-os/armada), verbatim.
 - `0009-fix-arm64-steam-night-mode.patch` - Armada, verbatim: the ARM64 client packs the
   night-mode property differently; the slider did nothing.

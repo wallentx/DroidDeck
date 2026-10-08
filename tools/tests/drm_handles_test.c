@@ -27,7 +27,7 @@ static int native_imports, native_exports, native_closes;
 static const char *driver_name = "pvr";
 static int fixture_stat(const char *path, struct stat *st);
 static long fixture_syscall(long number, ...);
-static int fixture_fcntl(int fd, int op, ...);
+static int fixture_fcntl(int fd, int op, int arg);
 static void *fixture_dlsym(void *object, const char *name);
 static int fixture_close(int fd);
 
@@ -65,11 +65,9 @@ static int fixture_stat(const char *path, struct stat *st) {
   return stat(path, st);
 }
 
-static int fixture_fcntl(int fd, int op, ...) {
-  va_list ap;
-  va_start(ap, op);
-  int arg = va_arg(ap, int);
-  va_end(ap);
+/* The intercepted DRM calls all take an integer argument. Keep that contract
+ * explicit; native_import's argument-free F_GETFD uses libc after #undef above. */
+static int fixture_fcntl(int fd, int op, int arg) {
   if (op == F_DUPFD_QUERY) {
     if (identity_denied) { errno = EINVAL; return -1; }
     if (fd < 0 || arg < 0 || fd >= TEST_FD_LIMIT || arg >= TEST_FD_LIMIT ||
