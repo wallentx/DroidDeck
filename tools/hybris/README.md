@@ -30,11 +30,21 @@ python3 tools/hybris/build_render_probe.py "$TMPDIR/droiddeck-hybris-render"
 
 The builder uses the installed Termux glibc toolchain, or an AArch64 Linux cross
 compiler on Linux. It compiles only the small test executable and two shaders.
-Select the isolated hybris ICD with `VK_DRIVER_FILES` when running it:
+Run from an AArch64 glibc environment configured for the isolated runtime. Set
+`HYBRIS_ICD` to the absolute path of that runtime's libhybris ICD manifest; the
+required expansion below prevents an unset value from selecting a default ICD.
+Both loader variable names select the same manifest, including older loaders.
 
 ```sh
-render-probe 0x1010 triangle.ppm
+VK_DRIVER_FILES="${HYBRIS_ICD:?Set HYBRIS_ICD to the isolated ICD manifest}" \
+VK_ICD_FILENAMES="${HYBRIS_ICD:?Set HYBRIS_ICD to the isolated ICD manifest}" \
+  "$TMPDIR/droiddeck-hybris-render/render-probe" 0x1010 \
+  "$TMPDIR/droiddeck-hybris-render/triangle.ppm"
 ```
+
+On Termux, place the glibc launcher (for example, `aether-run`) before the
+executable path. The builder neither installs the probe on `PATH` nor installs
+the isolated runtime.
 
 This directory has no dependency on the AVF kernel, staging tools or workflow.
 Those experiments remain on the `wallentx/powervr-avf` branch.
