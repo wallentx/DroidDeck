@@ -1,0 +1,44 @@
+diff --git a/src/emu/x86syscall.c b/src/emu/x86syscall.c
+index 7e831b4..2fc2a97 100755
+--- a/src/emu/x86syscall.c
++++ b/src/emu/x86syscall.c
+@@ -56,7 +56,7 @@ static const scwrap_t syscallwrap[] = {
+     //{ 13, __NR_time, 1 },
+     //{ 15, __NR_chmod, 2 },
+     //{ 19, __NR_lseek, 3 },
+-    //{ 20, __NR_getpid, 0 },
++    { 20, __NR_getpid, 0 },
+     //{ 24, __NR_getuid, 0 },
+     //{ 33, __NR_access, 2 },
+     //{ 37, __NR_kill, 2 },
+@@ -165,7 +165,7 @@ static const scwrap_t syscallwrap[] = {
+     //{ 331, __NR_pipe2, 2},
+     //{ 332, __NR_inotify_init1, 1},
+     //{ 355, __NR_getrandom, 3 },
+-    //{ 356, __NR_memfd_create, 2},
++    { 356, __NR_memfd_create, 2},
+     //{ 449, __NR_futex_waitv, 5},
+ };
+
+@@ -273,6 +273,21 @@ void EXPORT x86Syscall(x64emu_t *emu)
+             //R_EAX = syscall(__NR_exit, R_EBX);  // the syscall should exit only current thread
+             R_EAX = R_EBX; // faking the syscall here, we don't want to really terminate the thread now
+             break;
++        case 3: // sys_read
++        case 4: // sys_write
++        case 6: { // sys_close
++            ssize_t result;
++            int fd = (int32_t)R_EBX;
++            void* buffer = (void*)(uintptr_t)R_ECX;
++            if(s == 3)
++                result = read(fd, buffer, R_EDX);
++            else if(s == 4)
++                result = write(fd, buffer, R_EDX);
++            else
++                result = close(fd);
++            R_EAX = result == -1 ? (uint32_t)-errno : (uint32_t)result;
++            break;
++        }
+         /*case 123:   // SYS_modify_ldt
+             R_EAX = my32_modify_ldt(emu, R_EBX, (thread_area_t*)(uintptr_t)R_ECX, R_EDX);
+             if(R_EAX==0xffffffff && errno>0)
