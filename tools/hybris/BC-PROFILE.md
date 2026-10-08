@@ -46,3 +46,19 @@ Build commands, unmodified and extended probe logs, validation output and exact
 local binaries are retained under `.local/benchmarks/powervr/bc-dev/` in the
 development checkout. Full runtime builds run in CI. The runtime source archive
 and combined downstream patch accompany the packaged libraries.
+
+## Per-game activation
+
+The game-environment launcher accepts `DROIDDECK_PROTON_WRAPPER` as an
+executable absolute path. It invokes the wrapper with the selected Proton
+command and its original arguments, after synchronization-pack selection.
+Only `waitforexitandrun` launches with a nonzero game prefix use the wrapper;
+Steam's compatibility probes and installer evaluations retain their ordinary
+launch path. Arguments are passed directly, without shell interpolation. A
+missing or non-executable wrapper fails explicitly.
+
+This hook allows an installed experimental profile to select its own DXVK
+payload while retaining the user's Proton and synchronization choices. It does
+not install or enable a graphics profile by itself. Per-game environment entries
+must be saved in DroidDeck's app-owned settings: the app regenerates the guest
+JSON and launch helper at each session start.
