@@ -258,6 +258,21 @@ def mark_install_scripts(command, env):
         print("droiddeck-game-env: install scripts not marked (%s)" % error, file=sys.stderr)
 
 
+def proton_launch(command, env):
+    """Apply an explicitly selected wrapper only to a real game launch."""
+    wrapper = env.get("DROIDDECK_PROTON_WRAPPER")
+    if not wrapper or not game_id(env) or len(command) < 2 or command[1] != "waitforexitandrun":
+        return command
+    if not os.path.isabs(wrapper) or not os.access(wrapper, os.X_OK):
+        raise OSError("DROIDDECK_PROTON_WRAPPER must name an executable absolute path")
+    return [wrapper, *command]
+
+
+def exec_proton(command, env):
+    command = proton_launch(command, env)
+    os.execvpe(command[0], command, env)
+
+
 def main():
     command = sys.argv[1:]
     if not command:
@@ -295,12 +310,12 @@ def main():
     launch, launch_env = select_sync(command, env, sync)
     if launch[0] != command[0]:
         try:
-            os.execvpe(launch[0], launch, launch_env)
+            exec_proton(launch, launch_env)
         except OSError as error:
             print("droiddeck-game-env: %s could not start (%s); stock launch" % (launch[0], error), file=sys.stderr)
             launch, launch_env = command, without_pack(launch_env, env)
             record_stock(sync, launch, launch_env)
-    os.execvpe(launch[0], launch, launch_env)
+    exec_proton(launch, launch_env)
 
 
 if __name__ == "__main__":

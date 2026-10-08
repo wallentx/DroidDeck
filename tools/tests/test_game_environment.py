@@ -26,6 +26,24 @@ def config_text(entries):
 
 
 class GameEnvironmentTest(unittest.TestCase):
+    def test_proton_wrapper_is_scoped_to_real_game_launches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wrapper = Path(tmp) / "wrapper with spaces"
+            wrapper.write_text("#!/bin/sh\nexit 0\n")
+            wrapper.chmod(0o755)
+            command = ["/proton", "waitforexitandrun", "/game with spaces.exe", "argument with spaces"]
+            env = {"STEAM_COMPAT_DATA_PATH": "/compatdata/42", "DROIDDECK_PROTON_WRAPPER": str(wrapper)}
+            self.assertEqual(MODULE["proton_launch"](command, env), [str(wrapper), *command])
+            self.assertEqual(MODULE["proton_launch"](command, dict(env, STEAM_COMPAT_DATA_PATH="/compatdata/0")), command)
+            probe = ["/proton", "run", "/evaluator.exe"]
+            self.assertEqual(MODULE["proton_launch"](probe, env), probe)
+            self.assertEqual(MODULE["proton_launch"](command, {}), command)
+
+    def test_missing_proton_wrapper_does_not_silently_run_stock(self):
+        env = {"STEAM_COMPAT_DATA_PATH": "/compatdata/42", "DROIDDECK_PROTON_WRAPPER": "/missing/wrapper"}
+        with self.assertRaises(OSError):
+            MODULE["proton_launch"](["/proton", "waitforexitandrun", "/game.exe"], env)
+
     def test_the_install_script_evaluator_gets_its_scripts_marked_first(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
