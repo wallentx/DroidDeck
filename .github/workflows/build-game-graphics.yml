@@ -1,0 +1,41 @@
+name: Build game graphics components
+on:
+  push:
+    paths:
+      - 'tools/dxvk/**'
+      - 'tools/vulkan-wsi/**'
+      - '.github/workflows/build-game-graphics.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  dxvk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build glslang-tools zstd g++-mingw-w64-x86-64-posix g++-mingw-w64-i686-posix
+      - name: Build pinned DXVK with format-based BC checks
+        run: bash tools/dxvk/build.sh out/dxvk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: graphics-dxvk
+          path: out/dxvk
+  wsi:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ pkg-config zstd libvulkan-dev libdrm-dev libxcb1-dev libxcb-shm0-dev libxcb-sync-dev libxcb-dri3-dev libxcb-present-dev libxcb-randr0-dev libx11-dev libx11-xcb-dev libxrandr-dev
+      - name: Build pinned X11 WSI layer
+        run: bash tools/vulkan-wsi/build.sh out/wsi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: graphics-wsi
+          path: out/wsi
