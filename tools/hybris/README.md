@@ -114,3 +114,8 @@ The test checkout keeps the release archive, source, build commands, patch,
 HAL metadata, before/after logs, image, result JSON and rerun instructions under
 the ignored `.local/benchmarks/powervr/hybris/` directory. No device libraries,
 normal Arch kernel, or DroidDeck runtime were replaced.
+
+## Experimental BC decoding for Direct3D
+
+[BC-PROFILE.md](BC-PROFILE.md) describes the opt-in profile, patched DXVK,
+GPU regression evidence and remaining app and precision gates.

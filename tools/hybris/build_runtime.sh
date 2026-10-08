@@ -18,6 +18,10 @@ fetch https://github.com/taowen/libhybris.git "$HYBRIS_REVISION" "$work/libhybri
 fetch https://github.com/taowen/arlinux-rootfs.git "$PROTOCOL_REVISION" "$work/rootfs"
 git -C "$work/libhybris" apply --check "$root/tools/hybris/powervr-hal-version.patch"
 git -C "$work/libhybris" apply "$root/tools/hybris/powervr-hal-version.patch"
+for patch in "$root"/tools/hybris/patches/*.patch; do
+  git -C "$work/libhybris" apply --check "$patch"
+  git -C "$work/libhybris" apply "$patch"
+done
 export ARLINUX_WSI_PROTOCOL_DIR="$work/rootfs/graphics-protocols"
 export CONTAINER_ENGINE=podman
 "$work/libhybris/tools/build-aarch64.sh" --out "$work/build"
