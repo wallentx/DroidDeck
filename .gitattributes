@@ -1,0 +1,2 @@
+# Diff context retains the exact upstream whitespace.
+tools/box64/patches/*.patch whitespace=-blank-at-eol
