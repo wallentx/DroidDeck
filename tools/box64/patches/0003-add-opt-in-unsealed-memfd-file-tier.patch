@@ -1,0 +1,101 @@
+diff --git a/src/emu/x86syscall.c b/src/emu/x86syscall.c
+--- a/src/emu/x86syscall.c
++++ b/src/emu/x86syscall.c
+@@ -12,7 +12,9 @@
+ #include <sys/select.h>
+ #include <sys/types.h>
+ #include <sys/ioctl.h>
+-#include <asm/stat.h>
++#include <sys/stat.h>
++#include <limits.h>
++#include <fcntl.h>
+ #include <errno.h>
+ #include <sched.h>
+ #include <sys/wait.h>
+@@ -165,7 +167,7 @@
+     //{ 331, __NR_pipe2, 2},
+     //{ 332, __NR_inotify_init1, 1},
+     //{ 355, __NR_getrandom, 3 },
+-    { 356, __NR_memfd_create, 2},
++    // Handled separately for the optional Android file-backed tier.
+     //{ 449, __NR_futex_waitv, 5},
+ };
+
+@@ -230,6 +232,65 @@
+     unsigned int  seg_not_present:1;
+     unsigned int  useable:1;
+ };
++
++// The native syscall validates the name and flags before a file-backed tier is considered.
++// Sealing/hugetlb/exec-policy requests retain the native kernel implementation.
++static int compat_memfd_create(const char* name, uint32_t flags)
++{
++    int native = syscall(__NR_memfd_create, name, flags);
++    if(native < 0)
++        return -1;
++    const char* directory = getenv("DROIDDECK_BOX64_MEMFD_DIR");
++    if(!directory || !directory[0] || (flags & ~1u))
++        return native;
++    const char* force = getenv("DROIDDECK_BOX64_MEMFD_FORCE_FILE");
++    if(!force || strcmp(force, "1")) {
++        char path[64];
++        snprintf(path, sizeof(path), "/proc/self/fd/%d", native);
++        int check = open(path, O_RDONLY | O_CLOEXEC);
++        if(check >= 0) {
++            close(check);
++            return native;
++        }
++        if(errno != EACCES && errno != EPERM)
++            return native;
++    }
++    int dirfd = open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++    struct stat st;
++    if(dirfd < 0 || fstat(dirfd, &st) || st.st_uid != geteuid() || (st.st_mode & 0077)) {
++        int error = dirfd < 0 ? errno : EACCES;
++        if(dirfd >= 0)
++            close(dirfd);
++        close(native);
++        errno = error;
++        return -1;
++    }
++    close(dirfd);
++    char path[PATH_MAX];
++    if(snprintf(path, sizeof(path), "%s/box64-memfd-XXXXXX", directory) >= sizeof(path)) {
++        close(native);
++        errno = ENAMETOOLONG;
++        return -1;
++    }
++    int fd = mkostemp(path, (flags & 1) ? O_CLOEXEC : 0);
++    if(fd < 0) {
++        int error = errno;
++        close(native);
++        errno = error;
++        return -1;
++    }
++    if(fchmod(fd, 0777) || unlink(path)) {
++        int error = errno;
++        close(fd);
++        unlink(path);
++        close(native);
++        errno = error;
++        return -1;
++    }
++    close(native);
++    printf_log(LOG_INFO, "Compat memfd: private file tier, flags=0x%x\n", flags);
++    return fd;
++}
+
+ int32_t my_open(x64emu_t* emu, void* pathname, int32_t flags, uint32_t mode);
+
+@@ -275,6 +336,11 @@
+             //R_EAX = syscall(__NR_exit, R_EBX);  // the syscall should exit only current thread
+             R_EAX = R_EBX; // faking the syscall here, we don't want to really terminate the thread now
+             break;
++        case 356: { // memfd_create
++            int result = compat_memfd_create((void*)(uintptr_t)R_EBX, R_ECX);
++            R_EAX = result == -1 ? (uint32_t)-errno : (uint32_t)result;
++            break;
++        }
+         case 5: { // sys_open
+             int result = my_open(emu, (void*)(uintptr_t)R_EBX, of_convert(R_ECX), R_EDX);
+             R_EAX = result == -1 ? (uint32_t)-errno : (uint32_t)result;
