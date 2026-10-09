@@ -150,11 +150,11 @@ diff --git a/src/wrapped/wrappedlibc.c b/src/wrapped/wrappedlibc.c
  }
  EXPORT int32_t my___open(x64emu_t* emu, void* pathname, int32_t flags, uint32_t mode) __attribute__((alias("my_open")));
  
-@@ -4445,6 +4451,14 @@
-     shm_unlink(name);    // remove the shm file, but it will still exist because it's currently in use
-     return tmp;
+@@ -4395,6 +4401,16 @@
+     return ret;
  }
-+#else
+ 
++#ifdef __NR_memfd_create
 +EXPORT int my_memfd_create(x64emu_t* emu, void* name, uint32_t flags)
 +{
 +    DD_LOADER_TRACE("api=libc-memfd event=enter native_nr=%d flags=0x%x\n", __NR_memfd_create, flags);
@@ -162,9 +162,11 @@ diff --git a/src/wrapped/wrappedlibc.c b/src/wrapped/wrappedlibc.c
 +    DD_LOADER_TRACE("api=libc-memfd flags=0x%x result=%d errno=%d\n", flags, result, result < 0 ? errno : 0);
 +    return result;
 +}
- #endif
- 
- #ifndef GRND_RANDOM
++#endif
++
+ #if 0
+ #ifdef PANDORA
+ #define RENAME_NOREPLACE    (1 << 0)
 diff --git a/src/wrapped/wrappedlibc_private.h b/src/wrapped/wrappedlibc_private.h
 --- a/src/wrapped/wrappedlibc_private.h
 +++ b/src/wrapped/wrappedlibc_private.h
