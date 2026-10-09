@@ -62,3 +62,13 @@ Temporary files are unlinked before their descriptor is returned. The tier
 retains close-on-exec and I/O behavior, but does not provide native memfd seal
 metadata for unsealed files. It is a diagnostic option, not a default runtime
 change. `DROIDDECK_BOX64_MEMFD_FORCE_FILE=1` exercises that tier in CI.
+
+## Targeted loader trace
+
+Set `DROIDDECK_BOX64_LOADER_TRACE=1` with `BOX64_LOG=1` for tagged loader
+records. The trace distinguishes raw i386, raw x86-64, libc `syscall`, direct
+libc `memfd_create`, `open` of proc paths, `dlopen` and `dlsym`. It records
+flags, pointer values, operation results and module paths/symbols. It does not
+print environment values or buffer contents, and preserves operation errno.
+The trace is disabled by default. CI exercises both libc entry points and
+checks that the tagged records are produced.

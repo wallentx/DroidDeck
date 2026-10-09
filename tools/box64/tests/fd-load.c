@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +47,12 @@ int main(int argc, char **argv)
         if (!strcmp(mode, "memfd")) {
             fd = compat_memfd();
             if (fd < 0) { fprintf(stderr, "memfd result %d\n", fd); return 6; }
+        } else if (!strcmp(mode, "libc-memfd")) {
+            fd = memfd_create(memfd_name, 0);
+            if (fd < 0) { perror("memfd_create"); return 6; }
+        } else if (!strcmp(mode, "libc-syscall")) {
+            fd = syscall(SYS_memfd_create, memfd_name, 0u);
+            if (fd < 0) { perror("syscall memfd_create"); return 6; }
         } else if (!strcmp(mode, "unlinked")) {
             const char *dir = getenv("TMPDIR");
             if (!dir) dir = "/tmp";

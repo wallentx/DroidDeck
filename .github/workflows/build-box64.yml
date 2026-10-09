@@ -20,7 +20,7 @@ jobs:
           bash tools/box64/tests/build.sh out/probes
           timeout 15 out/probes/control
           timeout 15 out/probes/int80
-          for mode in disk memfd unlinked; do
+          for mode in disk memfd unlinked libc-memfd libc-syscall; do
             timeout 15 out/probes/fd-load "$PWD/out/probes/module.so" "$mode"
           done
   box64:
@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gcc g++ gcc-x86-64-linux-gnu python3 clang lld zstd
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gcc g++ gcc-x86-64-linux-gnu python3 clang lld zstd ripgrep
       - name: Build pinned experimental component
         run: bash tools/box64/build.sh out/box64
       - name: Check translated syscalls
@@ -45,13 +45,26 @@ jobs:
           BOX64_DYNAREC=0 timeout 20 out/box64/box64 out/probes/int80
           mkdir -p out/private-memfd
           chmod 700 out/private-memfd
-          for mode in disk memfd unlinked; do
+          for mode in disk memfd unlinked libc-memfd libc-syscall; do
             timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" "$mode"
           done
           DROIDDECK_BOX64_MEMFD_DIR="$PWD/out/private-memfd" DROIDDECK_BOX64_MEMFD_FORCE_FILE=1 \
             timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" memfd
           DROIDDECK_BOX64_MEMFD_DIR=/tmp DROIDDECK_BOX64_MEMFD_FORCE_FILE=1 \
             timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" bad-directory
+      - name: Check opt-in loader trace
+        env:
+          DROIDDECK_BOX64_LOADER_TRACE: '1'
+          BOX64_LOG: '1'
+          BOX64_NORCFILES: '1'
+        run: |
+          for mode in memfd libc-memfd libc-syscall; do
+            timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" "$mode" 2>> out/loader-trace.log
+          done
+          rg 'abi=i386 event=enter nr=356' out/loader-trace.log
+          rg 'api=libc-memfd flags=0x0 result=' out/loader-trace.log
+          rg 'api=libc-syscall nr=319 flags=0x0 result=' out/loader-trace.log
+          rg 'api=dlopen event=return handle=' out/loader-trace.log
       - uses: actions/upload-artifact@v7
         with:
           name: experimental-box64
