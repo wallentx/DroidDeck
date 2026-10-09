@@ -58,17 +58,22 @@ jobs:
           BOX64_LOG: '1'
           BOX64_NORCFILES: '1'
         run: |
+          trap 'cat out/loader-trace.log' EXIT
           for mode in memfd libc-memfd libc-syscall; do
-            timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" "$mode" 2>> out/loader-trace.log
+            timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" "$mode" 2>> out/loader-trace.log | tee "out/trace-$mode.stdout"
+            rg "PASS: module load and symbol call through $mode" "out/trace-$mode.stdout"
           done
           rg 'abi=i386 event=enter nr=356' out/loader-trace.log
           rg 'api=libc-memfd flags=0x0 result=' out/loader-trace.log
           rg 'api=libc-syscall nr=319 flags=0x0 result=' out/loader-trace.log
           rg 'api=dlopen event=return handle=' out/loader-trace.log
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: experimental-box64
           path: |
             out/box64
             out/probes
+            out/loader-trace.log
+            out/trace-*.stdout
           if-no-files-found: error
