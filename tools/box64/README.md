@@ -45,3 +45,20 @@ Artifacts contain the binary, patched source archive, exact upstream revision,
 downstream patch, license, checksums and probes. A successful CPU test does not
 establish Wine, PowerVR Vulkan, Steam integration or game/anti-cheat compatibility;
 those require separate device tests. Preserve existing game settings until then.
+
+## Descriptor-backed modules
+
+The loader keeps the actual library returned by `AddNeededLib` rather than
+looking it up again by a descriptor pathname. The focused regression checks
+loading, symbol calls, original descriptor offset preservation and `dlclose`
+for disk files, memfds and unlinked temporary files.
+
+An optional `DROIDDECK_BOX64_MEMFD_DIR` selects a private file-backed tier for
+unsealed i386 `memfd_create` calls when Android refuses to reopen the returned
+native memfd. The directory must be owned by the process and inaccessible to
+other users. The native syscall still validates the name and flags first;
+sealing, huge-page and execute-policy flags always use the native backend.
+Temporary files are unlinked before their descriptor is returned. The tier
+retains close-on-exec and I/O behavior, but does not provide native memfd seal
+metadata for unsealed files. It is a diagnostic option, not a default runtime
+change. `DROIDDECK_BOX64_MEMFD_FORCE_FILE=1` exercises that tier in CI.
