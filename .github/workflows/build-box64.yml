@@ -33,6 +33,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gcc g++ gcc-x86-64-linux-gnu python3 clang lld zstd ripgrep
       - name: Build pinned experimental component
         run: bash tools/box64/build.sh out/box64
+      - name: Check exported trace wrapper
+        run: readelf --dyn-syms out/box64/box64 | rg 'my_memfd_create$'
       - name: Check translated syscalls
         env:
           BOX64_NORCFILES: '1'
