@@ -15,6 +15,7 @@ for patch in "$root"/tools/box64/patches/*.patch; do
   git -C "$work/source" apply --check "$patch"
   git -C "$work/source" apply "$patch"
 done
+python3 "$root/tools/box64/tests/check-memory-maps.py" "$work/source/src/elfs/elfloader.c"
 cmake -S "$work/source" -B "$work/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DARM64=1 -DARM_DYNAREC=1 -DWINLATOR_GLIBC=1 -DBAD_SIGNAL=1 -DBOX32=0 -DHAVE_TRACE=0 -DCI=1
 cmake --build "$work/build" --parallel 4

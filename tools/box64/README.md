@@ -46,6 +46,16 @@ downstream patch, license, checksums and probes. A successful CPU test does not
 establish Wine, PowerVR Vulkan, Steam integration or game/anti-cheat compatibility;
 those require separate device tests. Preserve existing game settings until then.
 
+## Memory-map formatting
+
+The generated `/proc/self/maps` stream keeps emulated ELF names and `[stack]`
+on their mapping lines. The formatter writes directly to the descriptor so
+long ELF paths do not overflow a fixed-size output buffer. Before compiling
+Box64, the build runs the actual patched formatter against controlled mappings;
+it checks row count, unchanged address/permission fields, labels, native-stack
+removal, spaces in filenames and a path longer than 2 KiB. This regression
+does not establish that EAC consumes the generated stream or that BattleBit loads.
+
 ## Descriptor-backed modules
 
 The loader keeps the actual library returned by `AddNeededLib` rather than
