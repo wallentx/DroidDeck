@@ -16,6 +16,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE, qualifiers = "mdpi")
@@ -84,7 +86,8 @@ class OnScreenControlsTest {
         assertEquals(true, field(control("ls"), "clicked"))
     }
 
-    @Test fun separateButtonsKeepStickClicksAvailableWithoutDoubleTapClicks() {
+    @Test @Config(shadows = [ClosedInputWriter::class])
+    fun separateButtonsKeepStickClicksAvailableWithoutDoubleTapClicks() {
         ControllerPrefs.setStickClick(context, false)
         val bridge = PadBridge(File(context.cacheDir, "stick-click-test"))
         val state = field(bridge, "state") as PadState
@@ -110,7 +113,8 @@ class OnScreenControlsTest {
         bridge.stop()
     }
 
-    @Test fun separateStickClickCanBeHeldAlongsideCameraAndReleasesOnCancelOrModeChange() {
+    @Test @Config(shadows = [ClosedInputWriter::class])
+    fun separateStickClickCanBeHeldAlongsideCameraAndReleasesOnCancelOrModeChange() {
         ControllerPrefs.setStickClick(context, false)
         val bridge = PadBridge(File(context.cacheDir, "stick-click-test"))
         val state = field(bridge, "state") as PadState
@@ -358,5 +362,15 @@ class OnScreenControlsTest {
         val coords = pointers.map { (_, position) -> MotionEvent.PointerCoords().apply { x = position.first; y = position.second; pressure = 1f; size = 1f } }.toTypedArray()
         val event = MotionEvent.obtain(1000L, time++, action, pointers.size, properties, coords, 0, 0, 1f, 1f, 0, 0, 0, 0)
         return try { view.onTouchEvent(event) } finally { event.recycle() }
+    }
+
+    // Keep real PadBridge/PadState mutations, but leave the Android JNI ring transport closed.
+    @Implements(value = FakeInputWriter::class, isInAndroidSdk = false)
+    class ClosedInputWriter {
+        @Implementation fun open(): Boolean = false
+
+        companion object {
+            @JvmStatic @Implementation fun __staticInitializer__() = Unit
+        }
     }
 }
