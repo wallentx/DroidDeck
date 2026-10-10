@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "vk_present.h"
 #include "vk_loader.h"
+#include "vk_external_image_sync.h"
 #include "sc_layer.h"
 #include "effects_chain.h"
 #include "framegen_bridge.h"
@@ -948,29 +949,30 @@ struct vkp_image *vkp_image_from_dmabuf(int fd, uint32_t drm_format, uint64_t mo
     return vkp_image_import_dmabuf(fd, drm_format, modifier, w, h, stride, offset, 0);
 }
 
-/* android_wlegl's producer waits for its GPU fence before committing. Return ownership
- * after sampling; render_impl/pass_copy_to wait for our fence before Wayland can release it. */
-static void release_android_image(VkCommandBuffer cmd, struct vkp_image *img) {
-    if (!img || !img->android_buffer) return;
-    VkImageMemoryBarrier release = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .srcQueueFamilyIndex = g_qfam, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
-        .image = img->image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT};
+/* Return client sources to FOREIGN after their final read. The consuming paths
+ * wait for our fence before Wayland can release an ordinary dma-buf or an
+ * android_wlegl AHardwareBuffer. Producer-fence synchronization is separate from
+ * these image-layout and ownership transfers. */
+static void release_external_client_image(VkCommandBuffer cmd, struct vkp_image *img) {
+    struct vkp_external_client_barrier_pair pair;
+    if (!img || !vkp_external_client_barrier_pair(
+                    img->image, g_qfam, img->dmabuf, img->blit_dst, &pair))
+        return;
     g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &release);
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &pair.release);
 }
 
-static void release_android_draws(VkCommandBuffer cmd, const struct vkp_draw *draws, int count) {
+static void release_external_client_draws(VkCommandBuffer cmd, const struct vkp_draw *draws, int count) {
     for (int i = 0; i < count; i++) {
         int seen = 0;
         for (int j = 0; j < i; j++) if (draws[j].img == draws[i].img) { seen = 1; break; }
-        if (!seen) release_android_image(cmd, draws[i].img);
+        if (!seen) release_external_client_image(cmd, draws[i].img);
     }
 }
 
-int vkp_image_is_dmabuf(const struct vkp_image *img) { return img && img->dmabuf && !img->blit_dst; }
+int vkp_image_is_dmabuf(const struct vkp_image *img) {
+    return img && vkp_is_external_client_image(img->dmabuf, img->blit_dst);
+}
 
 int vkp_android_buffer_supported(void) {
     return dev_init() == 0 && g_ahb_properties != NULL;
@@ -1245,11 +1247,14 @@ static int draw_to_scene_blit(const struct vkp_draw *d, int scene_w, int scene_h
 static void record_draw(VkCommandBuffer cmd, const struct vkp_draw *d, const VkImageBlit *blit, VkImage target,
                         VkFormat target_fmt, int target_w, int target_h, VkFilter filter) {
     const struct vkp_image *im = d->img;
+    const int external_client = vkp_image_is_dmabuf(im);
     if (d->blend && im->sampled &&
-        blendp_draw(cmd, im->image, im->fmt, im->w, im->h, !im->dmabuf, target, target_fmt, target_w, target_h,
+        blendp_draw(cmd, im->image, im->fmt, im->w, im->h, !external_client,
+                    target, target_fmt, target_w, target_h,
                     blit) == 0)
         return;
-    g_vk.CmdBlitImage(cmd, im->image, im->dmabuf ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL,
+    g_vk.CmdBlitImage(cmd, im->image,
+                      external_client ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL,
                       target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, blit, filter);
 }
 
@@ -1712,13 +1717,11 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
         int seen = 0;
         for (int j = 0; j < i; j++) if (draws[j].img == im) { seen = 1; break; }
         if (seen || !im) continue;
-        if (im->dmabuf) {
-            bars[nb++] = (VkImageMemoryBarrier){
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = im->android_buffer ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
-                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
-                .image = im->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
-        } else if (!im->in_general) {
+        struct vkp_external_client_barrier_pair pair;
+        if (vkp_external_client_barrier_pair(
+                im->image, g_qfam, im->dmabuf, im->blit_dst, &pair)) {
+            bars[nb++] = pair.acquire;
+        } else if (!im->blit_dst && !im->in_general) {
             bars[nb++] = (VkImageMemoryBarrier){
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_PREINITIALIZED,
                 .newLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -1785,7 +1788,7 @@ static int render_impl(int scene_w, int scene_h, const struct vkp_draw *draws, i
         drawn++;
     }
 
-    release_android_draws(cmd, draws, n);
+    release_external_client_draws(cmd, draws, n);
     int ngen = 0;
     VkImage gens[VKP_FG_MAX_GENERATIONS] = {VK_NULL_HANDLE};
     VkImage result = scene_img;
@@ -1991,7 +1994,7 @@ int vkp_map_draw(const struct vkp_draw *d, int out[8]) {
  * owned by the "foreign" queue family (the game's driver / the display) between our uses, so each
  * use acquires them and the destination is released back for the display to read. */
 int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
-    if (!src || !dst || !dst->blit_dst || g_dev_state == -2 || dev_init() != 0) {
+    if (!src || src->blit_dst || !dst || !dst->blit_dst || g_dev_state == -2 || dev_init() != 0) {
         if (wait_fd >= 0) close(wait_fd);
         return -1;
     }
@@ -2004,17 +2007,21 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(g_cmd, &bi);
+    struct vkp_external_client_barrier_pair src_pair;
+    const int src_external = vkp_external_client_barrier_pair(
+        src->image, g_qfam, src->dmabuf, src->blit_dst, &src_pair);
     VkImageMemoryBarrier acq[2] = {
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = src->android_buffer ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+        src_external ? src_pair.acquire : (VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-         .srcQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
-         .dstQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .image = src->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT},
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
          .image = dst->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT}};
-    if (!src->dmabuf) { /* shm image: host-written, GENERAL */
+    if (!src_external) { /* shm image: host-written, GENERAL */
         acq[0].oldLayout = src->in_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_PREINITIALIZED;
         acq[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
         acq[0].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
@@ -2028,9 +2035,9 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstOffsets = {{0, 0, 0}, {bw, bh, 1}}};
     g_vk.CmdBlitImage(g_cmd, src->image,
-                      src->dmabuf ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL,
+                      src_external ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL,
                       dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
-    release_android_image(g_cmd, src);
+    release_external_client_image(g_cmd, src);
     VkImageMemoryBarrier rel = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = g_qfam,
@@ -2065,7 +2072,7 @@ int vkp_blit_image(struct vkp_image *src, struct vkp_image *dst, int wait_fd) {
 static struct vkp_image *g_rb;  /* the readback image, kept for the next shape */
 
 int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
-    if (!src || !out || src->w <= 0 || src->h <= 0 || src->w * src->h > max_px ||
+    if (!src || src->blit_dst || !out || src->w <= 0 || src->h <= 0 || src->w * src->h > max_px ||
         g_dev_state == -2 || dev_init() != 0)
         return -1;
     if (g_rb && (g_rb->w != src->w || g_rb->h != src->h)) { vkp_image_destroy(g_rb); g_rb = NULL; }
@@ -2106,11 +2113,15 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     g_vk.BeginCommandBuffer(cmd, &bi);
+    struct vkp_external_client_barrier_pair src_pair;
+    const int src_external = vkp_external_client_barrier_pair(
+        src->image, g_qfam, src->dmabuf, src->blit_dst, &src_pair);
     VkImageMemoryBarrier acq[2] = {
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = src->android_buffer ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+        src_external ? src_pair.acquire : (VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-         .srcQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
-         .dstQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .image = src->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT},
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
          .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2128,16 +2139,20 @@ int vkp_image_readback(struct vkp_image *src, uint32_t *out, int max_px) {
         {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
          .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = g_rb->image, .subresourceRange = range,
-         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT},
-        /* the client's buffer goes back to it */
-        {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT}};
+    uint32_t done_count = 1;
+    if (!src_external) {
+        done[done_count++] = (VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-         .srcQueueFamilyIndex = src->dmabuf ? g_qfam : VK_QUEUE_FAMILY_IGNORED,
-         .dstQueueFamilyIndex = src->dmabuf ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED,
-         .image = src->image, .subresourceRange = range, .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT}};
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .image = src->image, .subresourceRange = range, .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+    }
     g_vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                             VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            0, 0, NULL, 0, NULL, 2, done);
+                            0, 0, NULL, 0, NULL, done_count, done);
+    release_external_client_image(cmd, src);
     g_vk.EndCommandBuffer(cmd);
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd};
     g_vk.ResetFences(g_dev, 1, &g_fence);
@@ -2239,13 +2254,11 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
         int seen = 0;
         for (int j = 0; j < i; j++) if (draws[j].img == im) { seen = 1; break; }
         if (seen || !im) continue;
-        if (im->dmabuf) {
-            bars[nb++] = (VkImageMemoryBarrier){
-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = im->android_buffer ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
-                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT, .dstQueueFamilyIndex = g_qfam,
-                .image = im->image, .subresourceRange = range, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
-        } else if (!im->in_general) {
+        struct vkp_external_client_barrier_pair pair;
+        if (vkp_external_client_barrier_pair(
+                im->image, g_qfam, im->dmabuf, im->blit_dst, &pair)) {
+            bars[nb++] = pair.acquire;
+        } else if (!im->blit_dst && !im->in_general) {
             bars[nb++] = (VkImageMemoryBarrier){
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_PREINITIALIZED,
                 .newLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -2286,7 +2299,7 @@ static int pass_begin_impl(int scene_w, int scene_h, const struct vkp_draw *draw
         if (vkp_effects_active()) vkp_effects_set_formats(VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM);
     }
 
-    release_android_draws(cmd, draws, n);
+    release_external_client_draws(cmd, draws, n);
     int mapped_w = (int)(scene_w * g_map.kx + 0.5f), mapped_h = (int)(scene_h * g_map.ky + 0.5f);
     g_pass.rw = scene_w; g_pass.rh = scene_h;
     g_pass.result = vkp_effects_run(cmd, scene_img, scene_w, scene_h, mapped_w, mapped_h,

@@ -7,7 +7,8 @@ The binary's shared-library needs are checked against `runtime-sonames.txt`, the
 library list, before anything is published.
 
 The pinned `gamescope-3.16.29-p11-powervr` archive matches this source patch stack through patch
-0124. It includes patch 0114 and the PowerVR fixes below, with patch 0113 removed.
+0124. It includes patch 0114 and the PowerVR fixes below, with patch 0113 removed. Patch 0125 is
+present in source for the planned p12 rebuild and is not part of the currently pinned archive.
 It was built from `deaec5537c36942bc8d9fb84739022fbf1d3133d` in
 [CI run 38028334199](https://github.com/wallentx/DroidDeck/actions/runs/38028334199),
 which passed the presentation policy tests and runtime library dependency check.
@@ -102,3 +103,12 @@ frame scheduler remained at 60 Hz. With no configured rate, SDL desktop-rate dis
 The mode-update log records configured, desktop and effective rates only when that tuple changes.
 The pinned p11 archive includes this correction; its effect on visible frame skipping still needs
 a controlled device test.
+
+`0125-sdl-wait-before-present.patch` completes the existing SDL compositor wait before
+`vkQueuePresentKHR`. Gamescope otherwise submits its composition and copy, presents with no
+render-finished semaphore, and waits afterward; the Android Vulkan bridge can therefore hand the
+native consumer an already-signaled fence while the swapchain image still contains an older frame.
+The patch moves the existing wait rather than adding another one. It serializes composition and
+presentation, giving up their previous overlap; a future pipelined implementation requires a binary
+render-finished semaphore per swapchain image. This patch awaits the p12 artifact and is not included
+in the pinned p11 archive.

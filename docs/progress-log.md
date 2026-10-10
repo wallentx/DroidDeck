@@ -7,6 +7,58 @@ the timeline, then lessons and backlog. Companion to the README (what the app *d
 
 ---
 
+## 2026-10-10 - On-screen pad touch ownership
+
+Joystick and guest-screen fingers now keep separate ownership from DOWN until
+UP/CANCEL. Previously an extra finger over a held stick, or a guest finger
+starting before a stick finger, could send a mixed touch stream to the
+activity's guest-input fallback. A guest finger also no longer acquires a pad
+button merely by moving across it. The guest SurfaceView handles touches when
+the pad is hidden; ordinary screen taps remain available alongside the pad.
+
+The focused cases cover both gesture orders, occupied sticks, guest/control
+separation, cancellation and isolated left/right stick gestures. API 28 type
+checks pass; full Robolectric execution remains for CI. The reported attack
+from a clean single-finger stick gesture was not reproduced by source-level
+tests. Bounded `OnScreenTouch` logs now record only gesture edges, pointer IDs,
+ownership and event source, including which edges were forwarded to the guest.
+They contain no coordinates, keyboard text or per-move logging. A device retest
+must distinguish any remaining guest-click path from downstream Steam Input.
+
+## 2026-10-10 - Captured old-frame replay and GPU handoff corrections
+
+A seven-second recording of the bundled startup movie on `e490bd1` contains
+older pictures reappearing after newer ones. At recording times 3.635, 3.668,
+3.718 and 3.770 seconds, the central animation shows A, B, A, B; its best
+matches in the original 30 fps movie are frames 83, 87, 83 and 87. The repeated
+poses are almost pixel-identical. Packet and decoded timestamps increase
+strictly, so this is not explained by MP4 timestamp/decode ordering. The
+recording alone does not identify which rendering handoff produced the replay.
+
+The same session logs `configured=60`, `desktop=120`, `effective=60`, and both
+Xwayland displays report 60 Hz. Patch 0124 is active; fixing that mismatch did
+not remove the visible problem.
+
+- **Gamescope presentation:** patch 0125 moves the existing composite timeline
+  wait before presentation. The SDL path has no render-finished semaphore;
+  presenting first could expose a swapchain image before its copy completed.
+  The change adds no second wait, but gives up render/present overlap. A future
+  pipelined path needs a binary semaphore for each presentation image.
+- **Imported source buffers:** the compositor now acquires client DMA-BUFs from
+  FOREIGN in `GENERAL`, preserving their contents, and returns ownership in
+  `GENERAL` after the final read. The old generic path acquired with
+  `UNDEFINED` and omitted the release used for Android buffers. Render, pass,
+  blit and readback share the barrier pair; SHM and compositor-owned pool
+  destinations keep their separate rules.
+
+The native barrier fixture and Gamescope patch-stack/presentation-policy
+checks pass locally, and both changes passed independent source review. The
+real submit/present ordering is not exercised by the pure Gamescope fixture.
+Patch 0125 awaits a rebuilt component and APK; a repeat capture must establish
+whether these corrections remove the visual replay. No GPU probes or live
+playback tests were run for this investigation. The recording, frame matches
+and timing evidence remain under ignored `.local/benchmarks/powervr/video-glitch-20261010/`.
+
 ## 2026-10-10 - Cadence, stick clicks, and independent SDR display layers
 
 The Dark Souls run delivered about 32 frames per second through gamescope in

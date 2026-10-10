@@ -24,6 +24,7 @@ class OnScreenControls(
     private val pad: PadBridge?,
     private val editing: Boolean = false,
     private val onKeyboard: (() -> Unit)? = null,
+    onGuestTouch: ((MotionEvent) -> Boolean)? = null,
 ) : View(context) {
 
     private class Control(
@@ -96,6 +97,7 @@ class OnScreenControls(
     private var quickHidden = false
     private var quickPressedBy = -1
     private var keyboardPressedBy = -1
+    private val buttonPointers = mutableSetOf<Int>()
     private var settings = ControllerPrefs.read(context)
     private var safe = Rect()
     private var selected: String? = null
@@ -119,6 +121,10 @@ class OnScreenControls(
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
         typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+
+    private val touchRouter = onGuestTouch?.let { guest ->
+        OnScreenTouchRouter(::claimsTouch, ::onControlsTouch, guest)
     }
 
     init {
@@ -540,6 +546,14 @@ class OnScreenControls(
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (editing) return onEditTouch(event)
+        return touchRouter?.onTouch(event) ?: onControlsTouch(event)
+    }
+
+    private fun claimsTouch(x: Float, y: Float): Boolean =
+        keyboardContains(x, y) || (!buttonsOnly && quickContains(x, y)) ||
+            (!quickHidden && (controlAt(x, y) != null || adaptiveStickAt(x, y, availableOnly = false) != null))
+
+    private fun onControlsTouch(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 val index = event.actionIndex
@@ -560,6 +574,7 @@ class OnScreenControls(
                 val control = controlAt(x, y) ?: adaptiveStickAt(x, y) ?: return false
                 if (control.pressedBy != -1) return true
                 control.pressedBy = event.getPointerId(index)
+                if (control.stick < 0) buttonPointers.add(control.pressedBy)
                 if (control.stick >= 0) {
                     control.clicked = settings.stickClick && control.lastUp > 0L && event.eventTime - control.lastUp < DOUBLE_TAP_MS
                     val adaptive = settings.adaptiveSticks
@@ -581,6 +596,7 @@ class OnScreenControls(
                     val y = event.getY(index)
                     val stick = controls.firstOrNull { it.stick >= 0 && it.pressedBy == pointer }
                     if (stick != null) { stick.drag(x, y); changed = true; continue }
+                    if (pointer !in buttonPointers) continue
                     val over = controlAt(x, y)?.takeIf { it.stick < 0 }
                     for (control in controls) {
                         if (control.stick < 0 && control.pressedBy == pointer && control !== over) {
@@ -598,6 +614,7 @@ class OnScreenControls(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
                 val pointer = event.getPointerId(event.actionIndex)
+                buttonPointers.remove(pointer)
                 if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
                     releaseAll()
                     return true
@@ -661,7 +678,7 @@ class OnScreenControls(
             !quickHidden && isVisible(it) && (editing || !settings.adaptiveSticks || it.stick < 0) && it.contains(x, y, it.radius)
         }
 
-    private fun adaptiveStickAt(x: Float, y: Float): Control? {
+    private fun adaptiveStickAt(x: Float, y: Float, availableOnly: Boolean = true): Control? {
         if (!settings.adaptiveSticks || editing || buttonsOnly || quickHidden) return null
         if (x < safe.left || x >= width - safe.right || y < safe.top || y >= height - safe.bottom) return null
         if (controls.any { it.stick < 0 && isVisible(it) && it.contains(x, y, it.radius, 5f) }) return null
@@ -669,7 +686,7 @@ class OnScreenControls(
             val dx = x - it.cx
             val dy = y - it.cy
             val reach = it.radius * 1.4f * sqrt(1.5f)
-            it.stick >= 0 && isVisible(it) && it.pressedBy == -1 && dx * dx + dy * dy <= reach * reach
+            it.stick >= 0 && isVisible(it) && (!availableOnly || it.pressedBy == -1) && dx * dx + dy * dy <= reach * reach
         }.minByOrNull {
             val dx = x - it.cx
             val dy = y - it.cy
@@ -744,6 +761,8 @@ class OnScreenControls(
     }
 
     fun releaseAll() {
+        touchRouter?.cancel()
+        buttonPointers.clear()
         quickPressedBy = -1
         keyboardPressedBy = -1
         invalidate()
