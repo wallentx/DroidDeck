@@ -6,14 +6,13 @@ ships (3.16.29, Arch Linux ARM's package, same build options), and staged from t
 The binary's shared-library needs are checked against `runtime-sonames.txt`, the runtime's own
 library list, before anything is published.
 
-The pinned `gamescope-3.16.29-p11-powervr` archive matches this source patch stack through patch
-0124. It includes patch 0114 and the PowerVR fixes below, with patch 0113 removed. Patch 0125 is
-present in source for the planned p12 rebuild and is not part of the currently pinned archive.
-It was built from `deaec5537c36942bc8d9fb84739022fbf1d3133d` in
-[CI run 38028334199](https://github.com/wallentx/DroidDeck/actions/runs/38028334199),
-which passed the presentation policy tests and runtime library dependency check.
+The pinned `gamescope-3.16.29-p12-powervr` archive matches this source patch stack through patch
+0125. It includes patch 0114 and the PowerVR fixes below, with patch 0113 removed.
+It was built from `7ae3bd972e9f911afeb13b7e69a8dac3ecd3f3ba` in
+[CI run 38034329682](https://github.com/wallentx/DroidDeck/actions/runs/38034329682),
+which passed full compilation, the presentation policy tests and the runtime dependency check.
 The published archive's SHA-256 was checked against the CI artifact. Device validation of the
-refresh-rate correction remains separate.
+frame-handoff correction remains separate.
 
 - `0002-steamcompmgr-fallback-appid-focus.patch` - Armada (armada-os/armada), verbatim.
 - `0009-fix-arm64-steam-night-mode.patch` - Armada, verbatim: the ARM64 client packs the
@@ -101,8 +100,8 @@ the desktop mode again after its window is shown, moved or resized. Without it, 
 cap was replaced by the panel's 120 Hz desktop mode for Steam's Xwayland display while Gamescope's
 frame scheduler remained at 60 Hz. With no configured rate, SDL desktop-rate discovery is unchanged.
 The mode-update log records configured, desktop and effective rates only when that tuple changes.
-The pinned p11 archive includes this correction; its effect on visible frame skipping still needs
-a controlled device test.
+The correction is included from p11 onward. Device logs confirmed the requested 60 Hz mode,
+but the captured old-frame replay persisted and prompted the subsequent handoff corrections.
 
 `0125-sdl-wait-before-present.patch` completes the existing SDL compositor wait before
 `vkQueuePresentKHR`. Gamescope otherwise submits its composition and copy, presents with no
@@ -110,5 +109,5 @@ render-finished semaphore, and waits afterward; the Android Vulkan bridge can th
 native consumer an already-signaled fence while the swapchain image still contains an older frame.
 The patch moves the existing wait rather than adding another one. It serializes composition and
 presentation, giving up their previous overlap; a future pipelined implementation requires a binary
-render-finished semaphore per swapchain image. This patch awaits the p12 artifact and is not included
-in the pinned p11 archive.
+render-finished semaphore per swapchain image. The pinned p12 archive includes this correction;
+its effect on the captured replay still needs a repeat device recording.

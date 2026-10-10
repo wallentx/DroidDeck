@@ -54,7 +54,7 @@ not remove the visible problem.
 The native barrier fixture and Gamescope patch-stack/presentation-policy
 checks pass locally, and both changes passed independent source review. The
 real submit/present ordering is not exercised by the pure Gamescope fixture.
-Patch 0125 awaits a rebuilt component and APK; a repeat capture must establish
+Patch 0125 is published in the pinned Gamescope p12 component; a repeat capture must establish
 whether these corrections remove the visual replay. No GPU probes or live
 playback tests were run for this investigation. The recording, frame matches
 and timing evidence remain under ignored `.local/benchmarks/powervr/video-glitch-20261010/`.
