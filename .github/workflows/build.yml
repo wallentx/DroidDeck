@@ -356,8 +356,8 @@ jobs:
           curl -fsSL -o pa.tar.gz https://github.com/pulseaudio/pulseaudio/archive/refs/tags/v13.0.tar.gz
           mkdir -p pa13 && tar -xzf pa.tar.gz -C pa13 --strip-components=1 && rm pa.tar.gz
       # DirectAudio - the game driver (one set per Wine audio interface), the Android-side helper and
-      # the Steam client's sinks - comes from a pinned release of The412Banner/directaudio, checksummed,
-      # exactly like gamescope; nothing compiled for audio is kept in this repo.
+      # the Steam client's sinks - comes from the checksummed component release in release.env.
+      # The downstream source patch and component build live in tools/directaudio/.
       - name: Fetch DirectAudio (tools/directaudio/release.env)
         run: tools/directaudio/fetch.sh "$PWD" "$PWD/sink-out"
       - name: Build the AAudio sink into the audio bundle
