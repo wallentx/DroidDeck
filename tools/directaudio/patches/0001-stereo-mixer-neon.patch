@@ -301,7 +301,7 @@ diff --git a/tests/directaudio_mixer_semantics_test.c b/tests/directaudio_mixer_
 new file mode 100644
 --- /dev/null
 +++ b/tests/directaudio_mixer_semantics_test.c
-@@ -0,0 +1,372 @@
+@@ -0,0 +1,386 @@
 +/*
 + * Regression contract for the DirectAudio same-rate packed stereo fast paths.
 + *
@@ -356,6 +356,16 @@ new file mode 100644
 +#define min(a, b) ((a) < (b) ? (a) : (b))
 +
 +#include "da_mix.h"
++/* The extracted and pinned-original helpers retain DirectAudio's exact
++ * float s[8] shape.  GCC cannot infer the source driver's format validation
++ * from their standalone signatures and warns that a zero-channel call might
++ * pass an uninitialized element to downmix_stereo.  This fixture only creates
++ * nonzero channel formats; retain the original code rather than changing the
++ * timed generic baseline or the extracted production slice. */
++#if defined(__GNUC__) && !defined(__clang__)
++# pragma GCC diagnostic push
++# pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
++#endif
 +#include "directaudio_mix_under_test.inc"
 +
 +enum { GUARD = 16, MAX_FRAMES = 480, RING_FRAMES = 521 };
@@ -490,6 +500,10 @@ new file mode 100644
 +        if (v->held_frames == 0) v->rs_pos = 0.0;
 +    }
 +}
++
++#if defined(__GNUC__) && !defined(__clang__)
++# pragma GCC diagnostic pop
++#endif
 +
 +static uint32_t next_random(uint32_t *state)
 +{
