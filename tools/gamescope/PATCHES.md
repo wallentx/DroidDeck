@@ -62,7 +62,7 @@ frame-handoff correction remains separate.
   it does not provide measured presentation timestamps. The build runs the capability-policy
   tests in `tests/nested-swapchain.cpp`; actual presentation still needs device validation.
 
-`release.env` may set `GAMESCOPE_REPOSITORY` to fetch a component from a downstream repository
+`release.env` may set `GAMESCOPE_REPO` to fetch a component from a downstream repository
 while retaining the configured source for the other APK assets. The archive remains SHA-256 pinned.
 
 - `0121-powervr-single-pixel-rcas.patch` - this app: select the existing single-pixel
