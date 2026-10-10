@@ -6,13 +6,13 @@ ships (3.16.29, Arch Linux ARM's package, same build options), and staged from t
 The binary's shared-library needs are checked against `runtime-sonames.txt`, the runtime's own
 library list, before anything is published.
 
-The pinned `gamescope-3.16.29-p10-powervr` archive matches this source patch stack through patch
-0123: it includes patch 0114 and the PowerVR fixes below, with patch 0113 removed. Patch 0124 is
-present in source for the next rebuild and is not part of the currently pinned archive.
-It was built from `51a3b89b00b5b1ae9f1888cd15d80df44af5f66c` in
-[CI run 37835789370](https://github.com/wallentx/DroidDeck/actions/runs/37835789370),
-which passed the nested-swapchain policy test and runtime library dependency check.
-Device validation of this updated focus-fix bundle remains separate.
+The pinned `gamescope-3.16.29-p11-powervr` archive matches this source patch stack through patch
+0124. It includes patch 0114 and the PowerVR fixes below, with patch 0113 removed.
+It was built from `deaec5537c36942bc8d9fb84739022fbf1d3133d` in
+[CI run 38028334199](https://github.com/wallentx/DroidDeck/actions/runs/38028334199),
+which passed the presentation policy tests and runtime library dependency check.
+The published archive's SHA-256 was checked against the CI artifact. Device validation of the
+refresh-rate correction remains separate.
 
 - `0002-steamcompmgr-fallback-appid-focus.patch` - Armada (armada-os/armada), verbatim.
 - `0009-fix-arm64-steam-night-mode.patch` - Armada, verbatim: the ARM64 client packs the
@@ -100,4 +100,5 @@ the desktop mode again after its window is shown, moved or resized. Without it, 
 cap was replaced by the panel's 120 Hz desktop mode for Steam's Xwayland display while Gamescope's
 frame scheduler remained at 60 Hz. With no configured rate, SDL desktop-rate discovery is unchanged.
 The mode-update log records configured, desktop and effective rates only when that tuple changes.
-This patch awaits a rebuilt Gamescope artifact and is not included in the pinned p10 archive.
+The pinned p11 archive includes this correction; its effect on visible frame skipping still needs
+a controlled device test.
