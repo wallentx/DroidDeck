@@ -372,6 +372,8 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         surfaceView = SurfaceView(this)
         surfaceView.holder.addCallback(this)
+        // Keep a guest gesture attached to a view when the on-screen pad is hidden.
+        surfaceView.setOnTouchListener { _, event -> onTouchEvent(event) }
         root.addView(surfaceView)
 
         val bridge = PadBridge(File(LinuxRuntime.sessionRoot(this), "dev/input"))
@@ -390,7 +392,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             uiHandler.removeCallbacks(cursorHide)
             cursorVisible = false
         }
-        onScreenControls = OnScreenControls(this, bridge, onKeyboard = ::togglePcKeyboard).also { root.addView(it) }
+        onScreenControls = OnScreenControls(this, bridge, onKeyboard = ::togglePcKeyboard, onGuestTouch = ::onTouchEvent).also { root.addView(it) }
         keyboard = KeyboardHost(this).also { root.addView(it) }
         touchpad = TouchpadGestures(PointerGestures.slop(this), pointerListener)
         // One arrow, ours: Android draws a system pointer for a mouse over any window, and the

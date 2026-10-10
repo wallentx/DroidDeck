@@ -264,6 +264,156 @@ class OnScreenControlsTest {
         assertEquals(-1, field(control("ls"), "pressedBy"))
     }
 
+    @Test @Config(shadows = [ClosedInputWriter::class])
+    fun eachStickAloneDoesNotForwardGuestEdgesOrPressAttackButtons() {
+        val guest = mutableListOf<Int>()
+        val bridge = PadBridge(File(context.cacheDir, "single-stick-routing-test"))
+        val state = field(bridge, "state") as PadState
+        view = OnScreenControls(context, bridge, onGuestTouch = { event -> guest.add(event.actionMasked); true })
+        view.layout(0, 0, 1200, 800)
+        for (id in listOf("ls", "rs")) {
+            val stick = control(id)
+            val x = value(stick, "cx")
+            val y = value(stick, "cy")
+            for ((action, position) in listOf(
+                MotionEvent.ACTION_DOWN to (x to y),
+                MotionEvent.ACTION_MOVE to (x + 25f to y),
+                MotionEvent.ACTION_UP to (x + 25f to y),
+            )) {
+                assertTrue(touch(action, 7 to position))
+                assertFalse("$id emitted an RB attack at action $action", state.isDown(PadState.RB))
+                assertEquals("$id emitted an RT attack at action $action", 0f, state.rightTrigger, 0f)
+                assertTrue("$id forwarded a guest touch at action $action", guest.isEmpty())
+                if (action == MotionEvent.ACTION_MOVE) assertTrue(if (id == "ls") state.leftX > 0f else state.rightX > 0f)
+            }
+            assertEquals(0f, state.leftX, 0f)
+            assertEquals(0f, state.rightX, 0f)
+        }
+        bridge.stop()
+    }
+
+    @Test @Config(shadows = [ClosedInputWriter::class])
+    fun stickGesturesAndExtraFingerOnHeldStickNeverReachGuestOrAttackButtons() {
+        val guest = mutableListOf<List<Int>>()
+        val bridge = PadBridge(File(context.cacheDir, "stick-routing-test"))
+        val state = field(bridge, "state") as PadState
+        view = OnScreenControls(context, bridge, onGuestTouch = { event ->
+            guest.add((0 until event.pointerCount).map(event::getPointerId)); true
+        })
+        view.layout(0, 0, 1200, 800)
+        val attack = control("rb")
+        val attackPosition = value(attack, "cx") to value(attack, "cy")
+        touch(MotionEvent.ACTION_DOWN, 7 to (540f to 400f))
+        touch(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), 7 to (540f to 400f), 9 to (660f to 400f))
+        touch(MotionEvent.ACTION_POINTER_DOWN or (2 shl 8), 7 to (540f to 400f), 9 to (660f to 400f), 11 to (540f to 400f))
+        touch(MotionEvent.ACTION_MOVE, 7 to (565f to 400f), 9 to (635f to 400f), 11 to attackPosition)
+        assertTrue(state.leftX > 0f)
+        assertTrue(state.rightX < 0f)
+        assertFalse(state.isDown(PadState.RB))
+        assertEquals(0f, state.rightTrigger, 0f)
+        touch(MotionEvent.ACTION_POINTER_UP or (2 shl 8), 7 to (565f to 400f), 9 to (635f to 400f), 11 to attackPosition)
+        touch(MotionEvent.ACTION_POINTER_UP, 7 to (565f to 400f), 9 to (635f to 400f))
+        assertEquals(0f, state.leftX, 0f)
+        assertTrue(state.rightX < 0f)
+        touch(MotionEvent.ACTION_UP, 9 to (635f to 400f))
+        assertEquals(0f, state.rightX, 0f)
+        assertFalse(state.isDown(PadState.RB))
+        assertTrue("a joystick gesture must not produce any guest touch/mouse events", guest.isEmpty())
+        bridge.stop()
+    }
+
+    @Test fun guestAndStickPointersStaySeparateRegardlessOfWhichTouchesFirst() {
+        for (guestFirst in listOf(true, false)) {
+            val guest = mutableListOf<Pair<Int, List<Int>>>()
+            val receive: (MotionEvent) -> Boolean = { event ->
+                guest.add(event.actionMasked to (0 until event.pointerCount).map(event::getPointerId)); true
+            }
+            view = OnScreenControls(context, null, onGuestTouch = receive)
+            val root = FrameLayout(context).apply {
+                addView(View(context).apply { setOnTouchListener { _, event -> receive(event) } }, FrameLayout.LayoutParams(1200, 800))
+                addView(view, FrameLayout.LayoutParams(1200, 800))
+                measure(View.MeasureSpec.makeMeasureSpec(1200, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY))
+                layout(0, 0, 1200, 800)
+            }
+            val first = if (guestFirst) 11 to (600f to 200f) else 7 to (540f to 400f)
+            val second = if (guestFirst) 7 to (540f to 400f) else 11 to (600f to 200f)
+            dispatch(root, MotionEvent.ACTION_DOWN, first)
+            dispatch(root, MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), first, second)
+            assertEquals(7, field(control("ls"), "pressedBy"))
+            val attack = control("rb")
+            val movedGuest = 11 to (value(attack, "cx") to value(attack, "cy"))
+            val movedStick = 7 to (580f to 400f)
+            val moved = if (guestFirst) arrayOf(movedGuest, movedStick) else arrayOf(movedStick, movedGuest)
+            dispatch(root, MotionEvent.ACTION_MOVE, *moved)
+            assertTrue(value(control("ls"), "kx") > 0f)
+            assertEquals("a guest finger must not acquire the attack button", -1, field(attack, "pressedBy"))
+            dispatch(root, MotionEvent.ACTION_POINTER_UP, *moved)
+            dispatch(root, MotionEvent.ACTION_UP, moved[1])
+            assertEquals(MotionEvent.ACTION_DOWN, guest.first().first)
+            assertEquals(MotionEvent.ACTION_UP, guest.last().first)
+            assertTrue(guest.all { it.second == listOf(11) })
+            assertEquals(-1, field(control("ls"), "pressedBy"))
+            view.visibility = View.GONE
+            dispatch(root, MotionEvent.ACTION_DOWN, 17 to (540f to 400f))
+            dispatch(root, MotionEvent.ACTION_UP, 17 to (540f to 400f))
+            assertEquals(listOf(MotionEvent.ACTION_DOWN to listOf(17), MotionEvent.ACTION_UP to listOf(17)), guest.takeLast(2))
+        }
+    }
+
+    @Test fun guestMultitouchActionsRemainBalancedWhileAStickIsHeld() {
+        val guest = mutableListOf<Triple<Int, Int, List<Int>>>()
+        view = OnScreenControls(context, null, onGuestTouch = { event ->
+            guest.add(Triple(event.actionMasked, event.actionIndex, (0 until event.pointerCount).map(event::getPointerId))); true
+        })
+        view.layout(0, 0, 1200, 800)
+        touch(MotionEvent.ACTION_DOWN, 7 to (540f to 400f))
+        touch(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), 7 to (540f to 400f), 11 to (600f to 200f))
+        touch(MotionEvent.ACTION_POINTER_DOWN or (2 shl 8), 7 to (540f to 400f), 11 to (600f to 200f), 13 to (650f to 200f))
+        touch(MotionEvent.ACTION_POINTER_UP or (1 shl 8), 7 to (540f to 400f), 11 to (600f to 200f), 13 to (650f to 200f))
+        touch(MotionEvent.ACTION_POINTER_UP or (1 shl 8), 7 to (540f to 400f), 13 to (650f to 200f))
+        touch(MotionEvent.ACTION_UP, 7 to (540f to 400f))
+        assertEquals(listOf(
+            Triple(MotionEvent.ACTION_DOWN, 0, listOf(11)),
+            Triple(MotionEvent.ACTION_POINTER_DOWN, 1, listOf(11, 13)),
+            Triple(MotionEvent.ACTION_POINTER_UP, 0, listOf(11, 13)),
+            Triple(MotionEvent.ACTION_UP, 0, listOf(13)),
+        ), guest)
+    }
+
+    @Test fun hidingControlsCancelsOnlyGuestPointersAndDoesNotReassignHeldFingers() {
+        val guest = mutableListOf<Pair<Int, List<Int>>>()
+        view = OnScreenControls(context, null, onGuestTouch = { event ->
+            guest.add(event.actionMasked to (0 until event.pointerCount).map(event::getPointerId)); true
+        })
+        view.layout(0, 0, 1200, 800)
+        touch(MotionEvent.ACTION_DOWN, 7 to (540f to 400f))
+        touch(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), 7 to (540f to 400f), 11 to (600f to 200f))
+        view.setQuickHidden(true)
+        touch(MotionEvent.ACTION_MOVE, 7 to (565f to 400f), 11 to (610f to 200f))
+        touch(MotionEvent.ACTION_POINTER_UP, 7 to (565f to 400f), 11 to (610f to 200f))
+        touch(MotionEvent.ACTION_UP, 11 to (610f to 200f))
+        assertEquals(listOf(MotionEvent.ACTION_DOWN to listOf(11), MotionEvent.ACTION_CANCEL to listOf(11)), guest)
+        assertEquals(-1, field(control("ls"), "pressedBy"))
+        touch(MotionEvent.ACTION_DOWN, 17 to (540f to 400f))
+        touch(MotionEvent.ACTION_UP, 17 to (540f to 400f))
+        assertEquals(listOf(MotionEvent.ACTION_DOWN to listOf(17), MotionEvent.ACTION_UP to listOf(17)), guest.takeLast(2))
+    }
+
+    @Test fun reloadingDuringMixedGestureCancelsGuestAndReleasesStick() {
+        val guest = mutableListOf<Pair<Int, List<Int>>>()
+        view = OnScreenControls(context, null, onGuestTouch = { event ->
+            guest.add(event.actionMasked to (0 until event.pointerCount).map(event::getPointerId)); true
+        })
+        view.layout(0, 0, 1200, 800)
+        touch(MotionEvent.ACTION_DOWN, 7 to (540f to 400f))
+        touch(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), 7 to (540f to 400f), 11 to (600f to 200f))
+        view.reload()
+        touch(MotionEvent.ACTION_POINTER_UP, 7 to (540f to 400f), 11 to (600f to 200f))
+        touch(MotionEvent.ACTION_UP, 11 to (600f to 200f))
+        assertEquals(listOf(MotionEvent.ACTION_DOWN to listOf(11), MotionEvent.ACTION_CANCEL to listOf(11)), guest)
+        assertEquals(-1, field(control("ls"), "pressedBy"))
+    }
+
     @Test fun adaptiveActivationLeavesFivePixelsAroundButtonHitTargets() {
         for (id in listOf("a", "rb")) {
             val button = control(id)
@@ -358,10 +508,19 @@ class OnScreenControlsTest {
     }
 
     private fun touch(action: Int, vararg pointers: Pair<Int, Pair<Float, Float>>): Boolean {
+        val event = event(action, *pointers)
+        return try { view.onTouchEvent(event) } finally { event.recycle() }
+    }
+
+    private fun dispatch(root: View, action: Int, vararg pointers: Pair<Int, Pair<Float, Float>>): Boolean {
+        val event = event(action, *pointers)
+        return try { root.dispatchTouchEvent(event) } finally { event.recycle() }
+    }
+
+    private fun event(action: Int, vararg pointers: Pair<Int, Pair<Float, Float>>): MotionEvent {
         val properties = pointers.map { (id, _) -> MotionEvent.PointerProperties().apply { this.id = id; toolType = MotionEvent.TOOL_TYPE_FINGER } }.toTypedArray()
         val coords = pointers.map { (_, position) -> MotionEvent.PointerCoords().apply { x = position.first; y = position.second; pressure = 1f; size = 1f } }.toTypedArray()
-        val event = MotionEvent.obtain(1000L, time++, action, pointers.size, properties, coords, 0, 0, 1f, 1f, 0, 0, 0, 0)
-        return try { view.onTouchEvent(event) } finally { event.recycle() }
+        return MotionEvent.obtain(1000L, time++, action, pointers.size, properties, coords, 0, 0, 1f, 1f, 0, 0, 0, 0)
     }
 
     // Keep real PadBridge/PadState mutations, but leave the Android JNI ring transport closed.
