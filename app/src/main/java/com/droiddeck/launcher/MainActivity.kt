@@ -334,6 +334,7 @@ class MainActivity : ComponentActivity() {
     private var theme by mutableStateOf("graphite")
     private var appScale by mutableStateOf(com.droiddeck.launcher.core.AppUiPrefs.DEFAULT_SCALE)
     private var hdrOn by mutableStateOf(false)
+    private var sdrZeroCopy by mutableStateOf(false)
     private var fpsLimit by mutableStateOf(0)
     private var upscaler by mutableStateOf(0)
     private var upscaleSharpness by mutableStateOf(75)
@@ -1182,6 +1183,7 @@ class MainActivity : ComponentActivity() {
                 mode = mode, resolution = resolution,
                 panelSize = com.droiddeck.launcher.session.SessionDisplay.panelSize(this),
                 hdr = hdrOn, hdrReason = hdrReason, fpsLimit = fpsLimit,
+                sdrZeroCopy = sdrZeroCopy,
                 upscaler = upscaler, upscaleSharpness = upscaleSharpness,
                 gpuDrivers = drivers.summary(),
                 touchMode = touchMode,
@@ -1239,6 +1241,7 @@ class MainActivity : ComponentActivity() {
                 onWifiDiscoverySettings = { openWifiDiscoverySettings() },
                 onResolution = { value -> SessionPrefs.setResolutionChoice(this, mode, value); resolution = value },
                 onHdr = { on -> SessionPrefs.setHdr(this, mode, on); hdrOn = on },
+                onSdrZeroCopy = { on -> SessionPrefs.setSdrZeroCopy(this, mode, on); sdrZeroCopy = on },
                 onGpuDrivers = { openComponents(focusContent = true, tab = com.droiddeck.launcher.ui.GPU_TAB) },
                 onFpsLimit = { fps -> SessionPrefs.setFpsLimit(this, mode, fps); fpsLimit = fps },
                 onUpscaler = { m -> SessionPrefs.setUpscaler(this, m); upscaler = m },
@@ -1410,6 +1413,7 @@ class MainActivity : ComponentActivity() {
         runSteamAtStartup = SessionPrefs.runSteamAtStartup(this)
         addedGamesDirs = SessionPrefs.addedGamesDirs(this)
         hdrOn = SessionPrefs.hdr(this, mode)
+        sdrZeroCopy = SessionPrefs.sdrZeroCopy(this, mode)
         fpsLimit = SessionPrefs.fpsLimit(this, mode)
         upscaler = SessionPrefs.upscaler(this)
         upscaleSharpness = SessionPrefs.upscaleSharpness(this)

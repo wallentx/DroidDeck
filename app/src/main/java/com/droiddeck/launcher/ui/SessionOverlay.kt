@@ -199,6 +199,8 @@ class DrawerActions(
     val fexPreset: String,
     val upscaler: Int = 0,
     val upscaleSharpness: Int = 75,
+    val sdrZeroCopy: Boolean = false,
+    val hdrActive: Boolean = false,
     /** The compositor's post chain (gpu/ScreenEffects), changed live. */
     val effects: ScreenEffects = ScreenEffects.OFF,
     /** Texture filtering for DirectX 9-11 games (core/TextureFiltering); lands on their next launch. */
@@ -229,6 +231,7 @@ class DrawerActions(
     val onFexPreset: (String) -> Unit,
     val onUpscaler: (Int) -> Unit = {},
     val onUpscaleSharpness: (Int) -> Unit = {},
+    val onSdrZeroCopy: (Boolean) -> Unit = {},
     val onEffects: (ScreenEffects) -> Unit = {},
     val onTextureAnisotropy: (Int) -> Unit = {},
     val onTextureLodBias: (String) -> Unit = {},
@@ -406,6 +409,10 @@ internal fun SessionDrawer(open: Boolean, requestedPage: SessionDrawerPage, cont
                                 if (SessionPrefs.upscalerHasSharpness(a.upscaler)) SliderRow(
                                     stringResource(R.string.display_sharpness), null, a.upscaleSharpness, 0..100, step = 5,
                                     format = { "$it%" }, modifier = focus.track(page, "upscale-sharpness"), onChange = a.onUpscaleSharpness)
+                            }
+                            SettingsGroup(stringResource(R.string.display_presentation)) {
+                                DisplayLayersRow(host, a.sdrZeroCopy, a.hdrActive, a.onSdrZeroCopy,
+                                    chipModifier = focus.track(page, "sdr-layers"))
                             }
                         }
                         SessionDrawerPage.EFFECTS -> {

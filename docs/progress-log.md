@@ -7,6 +7,35 @@ the timeline, then lessons and backlog. Companion to the README (what the app *d
 
 ---
 
+## 2026-10-10 - Cadence, stick clicks, and independent SDR display layers
+
+The Dark Souls run delivered about 32 frames per second through gamescope in
+the later traversal segment. That is neither an engine-frame measurement nor
+proof of smooth presentation; no GPU loss was recorded during that run.
+
+- **Refresh cadence:** buffer-release pacing now uses Choreographer's frame
+  timestamps instead of the time the compositor happens to drain its pipe.
+  Receipt time still detects stalled callbacks. Invalid timestamps and isolated
+  missed callbacks do not change the estimate; repeated samples establish a
+  refresh-rate change. A host C regression covers delayed delivery, 60/120 Hz,
+  invalid samples, and pause/resume.
+- **Camera control:** turning off the existing **Stick click** gesture now
+  shows separate, movable L3/R3 buttons. A quick camera-stick re-grab can no
+  longer synthesize R3 in that mode, while lock-on remains available. The
+  default gesture and saved positions of existing controls are preserved.
+- **SDR presentation:** **SDR display layers (experimental)** is available in
+  Display settings and the session drawer. It is off by default and saved per
+  session mode. HDR still requires layers without overwriting the separate SDR
+  choice. Frame generation and scene composition can select a copy fallback;
+  enabling the preference does not guarantee zero-copy or higher performance.
+
+The cadence fix does **not** resolve `wp_presentation` reporting submission time
+as display completion. Accurate feedback still needs frame-owned completion
+tracking and safe fallback behavior; a later Choreographer tick alone cannot
+prove that a frame reached the display. Native cadence tests and focused Kotlin
+checks pass locally; full Android/Robolectric CI and a matched-scene device
+comparison remain required before claiming a smoothness or FPS improvement.
+
 ## 2026-10-08 - `feat/directaudio-from-release`: DirectAudio from its own release, picked by interface, and the client gets the real engine
 
 Three things were wrong with audio at once, and one tidy-up @xXJSONDeruloXx asked for.
