@@ -519,19 +519,25 @@ jobs:
             echo "::error::APK version '$VERSION' does not end with source commit '$SHORT_SHA'"; exit 1;
           }
           mkdir -p apk-output
-          cp "$APK" "apk-output/DroidDeck-$VERSION.apk"
-          (cd apk-output && sha256sum -- *.apk > SHA256SUMS)
+          artifact="DroidDeck-$VERSION.apk"
+          cp "$APK" "apk-output/$artifact"
+          {
+            echo '### Test APK SHA-256'
+            echo
+            echo '```'
+            (cd apk-output && sha256sum -- "$artifact")
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Upload the test-signed APK
         id: apk
         uses: actions/upload-artifact@v7
         with:
-          name: droiddeck-apk
-          path: apk-output/*
+          path: apk-output/DroidDeck-*.apk
+          archive: false
           if-no-files-found: error
           retention-days: 30
-          compression-level: 0
 
       - name: Report on the pull request
         if: always() && github.event_name == 'pull_request'
@@ -558,7 +564,7 @@ jobs:
               success)
                 echo "###  Build passed"
                 echo
-                echo "[Download DroidDeck $APK_VERSION]($ARTIFACT_URL) (\`droiddeck-apk\` artifact), signed with the public test key."
+                echo "[Download DroidDeck $APK_VERSION]($ARTIFACT_URL) (\`DroidDeck-$APK_VERSION.apk\`), signed with the public test key."
                 echo
                 if [ "$UPSTREAM_RELEASES" = true ]; then
                   if [ "$SAME_REPO" = true ]; then

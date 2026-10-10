@@ -6,8 +6,9 @@ ships (3.16.29, Arch Linux ARM's package, same build options), and staged from t
 The binary's shared-library needs are checked against `runtime-sonames.txt`, the runtime's own
 library list, before anything is published.
 
-The pinned `gamescope-3.16.29-p10-powervr` archive matches this source patch stack:
-it includes patch 0114 and the PowerVR fixes below, with patch 0113 removed.
+The pinned `gamescope-3.16.29-p10-powervr` archive matches this source patch stack through patch
+0123: it includes patch 0114 and the PowerVR fixes below, with patch 0113 removed. Patch 0124 is
+present in source for the next rebuild and is not part of the currently pinned archive.
 It was built from `51a3b89b00b5b1ae9f1888cd15d80df44af5f66c` in
 [CI run 37835789370](https://github.com/wallentx/DroidDeck/actions/runs/37835789370),
 which passed the nested-swapchain policy test and runtime library dependency check.
@@ -93,3 +94,10 @@ a BGRA swapchain preserves the error. A native store-then-sample probe reproduce
 X11 checkerboard reproduced the same channel reversal. Other vendors, direct
 composition and HDR retain their existing format selection. This fixes channel
 order; it does not address Steam's separate corrupted DRI3 window contents.
+
+`0124-sdl-preserve-explicit-refresh.patch` keeps an explicit nested refresh (`-r`) when SDL reports
+the desktop mode again after its window is shown, moved or resized. Without it, a 60 Hz DroidDeck
+cap was replaced by the panel's 120 Hz desktop mode for Steam's Xwayland display while Gamescope's
+frame scheduler remained at 60 Hz. With no configured rate, SDL desktop-rate discovery is unchanged.
+The mode-update log records configured, desktop and effective rates only when that tuple changes.
+This patch awaits a rebuilt Gamescope artifact and is not included in the pinned p10 archive.
