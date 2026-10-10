@@ -1,0 +1,195 @@
+name: Build DirectAudio game unixlib (patched)
+
+# Rebuilds only the game's glibc Wine unixlib with DroidDeck's downstream mixer
+# patch. The Android relay and PulseAudio sinks are immutable, verified upstream
+# archives; no AAudio library is allowed in a game process.
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'tools/directaudio/source.env'
+      - 'tools/directaudio/build-unixlib.sh'
+      - 'tools/directaudio/package-release.sh'
+      - 'tools/directaudio/patches/**'
+      - 'tools/directaudio/tests/**'
+      - '.github/workflows/build-directaudio.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Component release tag to publish; empty uploads artifacts only'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  LLVM_MINGW: llvm-mingw-20250920-ucrt-ubuntu-22.04-x86_64
+
+jobs:
+  mixer-regression:
+    name: Mixer kernels (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check pinned downstream source and apply patches
+        run: |
+          set -euo pipefail
+          . tools/directaudio/source.env
+          git clone --no-checkout --filter=blob:none "$DIRECTAUDIO_SOURCE_URL" source
+          git -C source fetch --depth=1 origin "$DIRECTAUDIO_SOURCE_REVISION"
+          git -C source checkout --detach FETCH_HEAD
+          test "$(git -C source rev-parse HEAD)" = "$DIRECTAUDIO_SOURCE_REVISION"
+          for patch in tools/directaudio/patches/*.patch; do
+            test -f "$patch"
+            git -C source apply --check "$GITHUB_WORKSPACE/$patch"
+            git -C source apply "$GITHUB_WORKSPACE/$patch"
+          done
+      - name: Run production mixer semantics
+        run: sh source/tests/run-mixer-semantics.sh
+
+  unixlib:
+    name: Unixlib (${{ matrix.label }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-wine11
+            abi: wine11
+            wine_repo: ValveSoftware/wine
+            wine_ref: e60892cc2398b0a83c332a2078c7b85e47bdb42b
+            unixlib_sha: fdbed263338d0719c4d12e02b045c23721de33219ec8878e4c2d7ebc9efcbe09
+            extradefs: ''
+          - label: linux-wine11-systhread
+            abi: systhread
+            wine_repo: CachyOS/wine-cachyos
+            wine_ref: 2ce6b44caa66a56ec99c7826ae564c088abc1b9f
+            unixlib_sha: 0de9fde40d091d82
+            extradefs: -DWINE_MMDEVAPI_SYSTEM_THREADS
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: component
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git wget curl unzip zip flex bison gettext autoconf \
+            pkg-config ccache gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-aarch64-linux-gnu
+      - name: Cache LLVM MinGW toolchain
+        id: llvm-mingw
+        uses: actions/cache@v6
+        with:
+          path: ~/toolchains/${{ env.LLVM_MINGW }}
+          key: directaudio-llvm-mingw-20250920
+      - name: Set up LLVM MinGW toolchain
+        if: steps.llvm-mingw.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/toolchains"
+          cd "$HOME/toolchains"
+          wget -q "https://github.com/bylaws/llvm-mingw/releases/download/20250920/${LLVM_MINGW}.tar.xz"
+          tar -xf "${LLVM_MINGW}.tar.xz"
+      - name: Check out pinned DirectAudio source and apply downstream patch
+        working-directory: component
+        run: |
+          set -euo pipefail
+          . tools/directaudio/source.env
+          git clone --no-checkout --filter=blob:none "$DIRECTAUDIO_SOURCE_URL" ../source
+          git -C ../source fetch --depth=1 origin "$DIRECTAUDIO_SOURCE_REVISION"
+          git -C ../source checkout --detach FETCH_HEAD
+          test "$(git -C ../source rev-parse HEAD)" = "$DIRECTAUDIO_SOURCE_REVISION"
+          for patch in tools/directaudio/patches/*.patch; do
+            test -f "$patch"
+            git -C ../source apply --check "$GITHUB_WORKSPACE/component/$patch"
+            git -C ../source apply "$GITHUB_WORKSPACE/component/$patch"
+          done
+      - name: Check out the pinned Wine ABI tree
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ matrix.wine_repo }}
+          ref: ${{ matrix.wine_ref }}
+          path: wine
+          fetch-depth: 1
+      - name: Build and verify game-only DirectAudio unixlib
+        working-directory: component
+        run: |
+          set -euo pipefail
+          export LLVM_MINGW_BIN="$HOME/toolchains/$LLVM_MINGW/bin"
+          bash tools/directaudio/build-unixlib.sh ../source ../wine ../out/${{ matrix.label }} \
+            '${{ matrix.label }}' '${{ matrix.abi }}' '${{ matrix.wine_repo }}' '${{ matrix.wine_ref }}' \
+            '${{ matrix.unixlib_sha }}' '${{ matrix.extradefs }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: directaudio-${{ matrix.label }}
+          path: out/${{ matrix.label }}
+          if-no-files-found: error
+
+  package:
+    name: Package four DirectAudio archives
+    needs: [mixer-regression, unixlib]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: directaudio-linux-wine11
+          path: out/linux-wine11
+      - uses: actions/download-artifact@v7
+        with:
+          name: directaudio-linux-wine11-systhread
+          path: out/linux-wine11-systhread
+      - name: Assemble downstream game drivers and immutable upstream helpers
+        run: bash tools/directaudio/package-release.sh out release
+      - name: Inspect expected component assets
+        run: |
+          set -euo pipefail
+          test "$(find release -maxdepth 1 -name 'directaudio-linux-*.zip' | wc -l)" -eq 4
+          test "$(wc -l < release/SHA256SUMS.txt)" -eq 4
+          unzip -l release/directaudio-linux-wine11.zip | grep -q 'aarch64-unix/winedirectaudio.so'
+          unzip -l release/directaudio-linux-wine11-systhread.zip | grep -q 'i386-windows/winedirectaudio.drv'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: directaudio-linux-component
+          path: release
+          if-no-files-found: error
+
+  publish:
+    name: Publish explicitly requested component release
+    needs: package
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: directaudio-linux-component
+          path: release
+      - name: Publish all four fetch-compatible assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag=$RELEASE_TAG
+          git check-ref-format --allow-onelevel "refs/tags/$tag"
+          case "$tag" in directaudio-linux-v*) ;; *) echo "tag must start directaudio-linux-v" >&2; exit 64 ;; esac
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "refusing to alter existing component release: $tag" >&2
+            exit 1
+          fi
+          (cd release && sha256sum --check SHA256SUMS.txt)
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --latest=false --prerelease=false --title "$tag" \
+            --notes "DirectAudio game unixlib built from tools/directaudio/patches at $GITHUB_SHA. Relay and sink are checksum-verified byte-identical copies of The412Banner/directaudio directaudio-linux-v1.1.0." \
+            release/directaudio-linux-wine11.zip release/directaudio-linux-wine11-systhread.zip \
+            release/directaudio-linux-relay.zip release/directaudio-linux-sink.zip release/SHA256SUMS.txt
