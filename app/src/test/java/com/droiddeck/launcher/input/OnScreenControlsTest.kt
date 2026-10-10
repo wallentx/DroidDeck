@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
+import java.io.File
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -81,6 +82,112 @@ class OnScreenControlsTest {
         touch(MotionEvent.ACTION_UP, 1 to (540f to 400f))
         touch(MotionEvent.ACTION_DOWN, 1 to (540f to 400f))
         assertEquals(true, field(control("ls"), "clicked"))
+    }
+
+    @Test fun separateButtonsKeepStickClicksAvailableWithoutDoubleTapClicks() {
+        ControllerPrefs.setStickClick(context, false)
+        val bridge = PadBridge(File(context.cacheDir, "stick-click-test"))
+        val state = field(bridge, "state") as PadState
+        view = OnScreenControls(context, bridge)
+        view.layout(0, 0, 1200, 800)
+        for ((id, button) in listOf("l3" to PadState.L3, "r3" to PadState.R3)) {
+            val click = control(id)
+            val position = value(click, "cx") to value(click, "cy")
+            assertNotEquals(0, pixel(position.first, position.second))
+            assertTrue(touch(MotionEvent.ACTION_DOWN, 1 to position))
+            assertTrue(state.isDown(button))
+            touch(MotionEvent.ACTION_UP, 1 to position)
+            assertFalse(state.isDown(button))
+        }
+        // Lifting and re-grabbing the camera stick must not click R3 in this mode.
+        repeat(2) {
+            touch(MotionEvent.ACTION_DOWN, 1 to (660f to 400f))
+            touch(MotionEvent.ACTION_MOVE, 1 to (680f to 400f))
+            assertTrue(state.rightX > 0f)
+            assertFalse(state.isDown(PadState.R3))
+            touch(MotionEvent.ACTION_UP, 1 to (680f to 400f))
+        }
+        bridge.stop()
+    }
+
+    @Test fun separateStickClickCanBeHeldAlongsideCameraAndReleasesOnCancelOrModeChange() {
+        ControllerPrefs.setStickClick(context, false)
+        val bridge = PadBridge(File(context.cacheDir, "stick-click-test"))
+        val state = field(bridge, "state") as PadState
+        view = OnScreenControls(context, bridge)
+        view.layout(0, 0, 1200, 800)
+        val click = control("r3")
+        val position = value(click, "cx") to value(click, "cy")
+        touch(MotionEvent.ACTION_DOWN, 1 to (660f to 400f))
+        touch(MotionEvent.ACTION_MOVE, 1 to (680f to 400f))
+        touch(MotionEvent.ACTION_POINTER_DOWN or (1 shl 8), 1 to (680f to 400f), 2 to position)
+        assertTrue(state.rightX > 0f)
+        assertTrue(state.isDown(PadState.R3))
+        touch(MotionEvent.ACTION_CANCEL, 1 to (680f to 400f), 2 to position)
+        assertEquals(0f, state.rightX, 0f)
+        assertFalse(state.isDown(PadState.R3))
+        touch(MotionEvent.ACTION_DOWN, 1 to position)
+        assertTrue(state.isDown(PadState.R3))
+        ControllerPrefs.setStickClick(context, true)
+        view.reload()
+        assertFalse(state.isDown(PadState.R3))
+        assertEquals(0, pixel(position.first, position.second))
+        assertFalse(touch(MotionEvent.ACTION_DOWN, 1 to position))
+        bridge.stop()
+    }
+
+    @Test fun separateStickClickButtonsRespectSavedLayoutAndOverlayVisibility() {
+        ControllerPrefs.setStickClick(context, false)
+        ControllerPrefs.setLayout(context, 1200, 800, mapOf("l3" to (0.4f to 0.2f), "r3" to (0.6f to 0.2f)))
+        view.reload()
+        assertEquals(480f, value(control("l3"), "cx"), 0f)
+        assertEquals(720f, value(control("r3"), "cx"), 0f)
+        assertTrue(touch(MotionEvent.ACTION_DOWN, 1 to (480f to 160f)))
+        assertEquals(1, field(control("l3"), "pressedBy"))
+        view.setQuickHidden(true)
+        assertEquals(-1, field(control("l3"), "pressedBy"))
+        assertFalse(touch(MotionEvent.ACTION_DOWN, 1 to (480f to 160f)))
+        view.setButtonsOnly(true)
+        assertEquals(0, pixel(720f, 160f))
+        assertFalse(touch(MotionEvent.ACTION_DOWN, 1 to (720f to 160f)))
+    }
+
+    @Test fun newStickClickButtonsAvoidControlsInLegacyCustomLayout() {
+        assertNewClicksAvoidLegacyLayout(1200, 800)
+    }
+
+    @Test @Config(qualifiers = "xxhdpi")
+    fun newStickClickButtonsAvoidLegacyLayoutOnHighDensityLandscapeScreen() {
+        assertNewClicksAvoidLegacyLayout(2992, 1344)
+    }
+
+    private fun assertNewClicksAvoidLegacyLayout(width: Int, height: Int) {
+        ControllerPrefs.resetAllLayouts(context)
+        ControllerPrefs.setStickClick(context, false)
+        view = OnScreenControls(context, null)
+        view.layout(0, 0, width, height)
+        // An older layout has no L3/R3 coordinates. Its saved buttons may occupy the
+        // spaces where the new buttons would have been placed in the automatic layout.
+        val legacy = listOf("select" to "l3", "start" to "r3").associate { (oldId, newId) ->
+            oldId to (value(control(newId), "cx") / width to value(control(newId), "cy") / height)
+        }
+        ControllerPrefs.setLayout(context, width, height, legacy)
+        view.reload()
+        for ((id, position) in legacy) {
+            assertEquals(position.first * width, value(control(id), "cx"), 0.01f)
+            assertEquals(position.second * height, value(control(id), "cy"), 0.01f)
+        }
+        for (id in listOf("l3", "r3")) {
+            val button = control(id)
+            val x = value(button, "cx")
+            val y = value(button, "cy")
+            val edge = value(button, "radius") * 1.2f
+            for (position in listOf(x to y, x - edge to y, x + edge to y, x to y - edge, x to y + edge)) {
+                assertTrue(touch(MotionEvent.ACTION_DOWN, 3 to position))
+                assertEquals("$id must own its hit target in the upgraded layout", 3, field(button, "pressedBy"))
+                touch(MotionEvent.ACTION_UP, 3 to position)
+            }
+        }
     }
 
     @Test fun buttonsTakePriorityOverAdaptiveRegions() {

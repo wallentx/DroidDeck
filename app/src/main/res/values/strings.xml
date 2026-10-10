@@ -244,6 +244,11 @@
     <string name="mode_hdr10">HDR10 output</string>
     <string name="mode_hdr_unavailable">Not available: %1$s.</string>
     <string name="mode_hdr_restart">Restart the app to apply.</string>
+    <string name="display_presentation">Presentation</string>
+    <string name="display_sdr_layers">SDR display layers (experimental)</string>
+    <string name="display_sdr_layers_hint">May reduce display overhead; performance varies. Frame generation and overlays can prevent their use.</string>
+    <string name="display_layers_hdr">HDR requires display layers. Your separate SDR choice is kept.</string>
+    <string name="display_layers_unavailable">Requires Android 10 or newer.</string>
     <string name="mode_drivers">Drivers</string>
     <string name="mode_gpu_drivers">GPU drivers</string>
     <string name="mode_gpu_drivers_hint">Shared by Steam and Desktop. Set on the Components page.</string>
@@ -843,7 +848,7 @@
     <string name="ctrl_size">Button size</string>
     <string name="ctrl_size_hint" formatted="false">100% is the standard size</string>
     <string name="ctrl_stick_click">Stick click</string>
-    <string name="ctrl_stick_click_hint">Double-tap and hold a stick for L3 or R3</string>
+    <string name="ctrl_stick_click_hint">Double-tap and hold a stick for L3 or R3. Turn off to use separate L3 and R3 buttons.</string>
     <string name="ctrl_adaptive">Adaptive sticks</string>
     <string name="ctrl_rumble">Game vibration</string>
     <string name="ctrl_steam_button">Steam button</string>
