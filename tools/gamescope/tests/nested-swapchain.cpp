@@ -1,10 +1,23 @@
 #include "nested_swapchain.hpp"
 #include "dmabuf_import.hpp"
+#include "sdl_refresh.hpp"
 #include <cassert>
 #include <cstdio>
 
 int main()
 {
+    using gamescope::ChooseSDLRefresh;
+    constexpr int configured60 = 60'000;
+    constexpr int desktop120 = 120'000;
+    auto capped = ChooseSDLRefresh(configured60, desktop120);
+    assert(capped.configured && capped.refresh == configured60);
+
+    auto discovered = ChooseSDLRefresh(0, desktop120);
+    assert(!discovered.configured && discovered.refresh == desktop120);
+
+    auto configured120 = ChooseSDLRefresh(120'000, 60'000);
+    assert(configured120.configured && configured120.refresh == 120'000);
+
     VkSurfaceCapabilitiesKHR caps = {};
     caps.minImageCount = 2;
     caps.maxImageCount = 3;
