@@ -1,9 +1,50 @@
 # Experimental Direct3D BC profile
 
 `HYBRIS_BC_TEXTURES=dxvk` enables a restricted GPU decoding profile in the
-hybris compatibility layer. It is opt-in; the session does not select it yet.
+hybris compatibility layer. It is opt-in through the launcher's remembered
+graphics choice.
 Use the format-checking DXVK built by `tools/dxvk/build.sh` with this profile.
 The global `textureCompressionBC` feature remains false.
+
+## Launcher setup
+
+On a PowerVR device, the first Steam launch offers **Standard** or
+**Experimental** graphics. The launcher remembers the selection. It is one
+APK; installing the app does not automatically opt games into this profile.
+
+1. Install the Linux runtime through the app if it is not already installed.
+2. Choose **Experimental** in the graphics prompt. The app downloads about
+   24.4 MB of pinned DXVK and WSI components, verifies them, and installs the
+   complete profile before continuing the launch.
+3. Launch games normally. The profile applies to real Proton game launches;
+   Steam startup, compatibility probes, and installer evaluations keep their
+   ordinary path.
+
+The choice is also available under **Steam settings > Display > Drivers >
+Steam graphics**. Selecting **Standard** disables the app-managed profile and
+restores the effect of the user's existing game settings. It does not delete
+or rewrite manually configured environment variables. Already running games
+keep their current configuration; changes apply on a subsequent game launch.
+
+The app saves the selected immutable pack revision independently from raw
+game-environment settings. A failed download or installation cannot activate
+a partial profile. Missing or corrupt selected files cause an explicit repair
+error for the game instead of silently launching with a different DXVK build.
+The same installed pack serves all games, and lives outside the replaceable
+Linux rootfs. Existing manually installed profiles remain separate.
+
+The managed profile includes the DXVK wrapper, both DLL architectures, the X11
+WSI library and its complete manifest, and the required layer/BC/Fossilize
+settings. It uses the libhybris compatibility layer from the installed APK.
+It does not include the BattleBit/EAC mapping experiments or the Dark Souls
+startup guard. This remains an experimental graphics choice, not a guarantee
+that every PowerVR game will run.
+
+`graphics-profile.json` pins download URLs, byte sizes, archive hashes, allowed
+archive members, and installed-file hashes. Its exact SHA-256 identifies the
+installed pack; the wrapper's hash is part of that manifest. Changing the
+wrapper or downloaded payload requires updating the manifest. The APK build
+checks that its bundled wrapper matches this manifest.
 
 The profile forces decoding of all fourteen Direct3D BC formats, even where
 PowerVR advertises native per-format support. BC1 RGB is excluded because its
@@ -63,6 +104,64 @@ payload while retaining the user's Proton and synchronization choices. It does
 not install or enable a graphics profile by itself. Per-game environment entries
 must be saved in DroidDeck's app-owned settings: the app regenerates the guest
 JSON and launch helper at each session start.
+
+### Standalone DXVK wrapper
+
+[`run-proton.py`](run-proton.py) is the shareable version of the DXVK override
+used during the graphics experiments. It contains no BattleBit low-address
+mapping hook, EAC experiment, or Dark Souls startup guard. It preserves the
+selected Proton and its arguments, and changes only an in-memory copy of the
+Proton script; the installed Proton script is not edited.
+
+The wrapper expects the extracted DXVK payload beside itself:
+
+```text
+bc-dxvk/
+|-- run-proton.py
+`-- dxvk/
+    |-- x32/
+    `-- x64/
+```
+
+Both architecture directories must contain `d3d8.dll`, `d3d9.dll`,
+`d3d10core.dll`, `d3d11.dll`, and `dxgi.dll`. These are the `x32/` and `x64/`
+directories from the experimental DXVK archive, not an ARM64 `.wcp` package.
+Stop the game before replacing any payload files.
+
+1. Copy the wrapper and extract the DXVK archive into that layout inside
+   DroidDeck's Linux runtime. An example profile directory is
+   `/root/.local/share/droiddeck-graphics/bc-dxvk`.
+2. Make the wrapper executable and check it against the selected Proton's
+   `proton` Python script. Replace `/path/to/proton` with that actual path:
+
+   ```sh
+   chmod 755 /root/.local/share/droiddeck-graphics/bc-dxvk/run-proton.py
+   python3 /root/.local/share/droiddeck-graphics/bc-dxvk/run-proton.py --check /path/to/proton
+   ```
+
+   `--check` checks that all ten DLLs are readable and nonempty and that the
+   expected Proton source expressions can be patched and compiled. It does
+   not execute Proton, modify a prefix, or test Vulkan/game compatibility.
+3. In **Steam settings > Games > Game environment > Edit**, select the game
+   and set `DROIDDECK_PROTON_WRAPPER` to the installed wrapper's absolute path.
+   Set `HYBRIS_BC_TEXTURES=dxvk` and use the Steam pipeline-cache settings below
+   for this experimental profile. Restart the game after changing its settings.
+
+The wrapper fails before starting Proton if a required DLL is missing, empty,
+or unreadable, or if the expected Proton source layout is not recognized. The
+supported layout uses separate x32/x64 DXVK copy expressions and a prefix
+configuration marker. Other Proton revisions may need an explicit adaptation;
+the wrapper does not silently launch with stock DXVK instead.
+
+The profile marker records activation in Proton's prefix configuration. The
+supported Proton script copies the selected DXVK DLLs on every launch, so
+replacing the staged DLLs does not require editing a version string in the
+wrapper. OpenVR and other Proton components retain their normal source paths.
+
+This is a DXVK selection wrapper, not a complete graphics-profile installer.
+It does not install libhybris or WSI, configure their Vulkan layers, or verify
+the downloaded DLLs' provenance. Those components must already be installed
+and configured for the experimental runtime.
 
 ## Steam pipeline-cache layer conflict
 

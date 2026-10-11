@@ -1,6 +1,7 @@
 package com.droiddeck.launcher.session
 
 import android.content.Context
+import android.util.AtomicFile
 import com.droiddeck.launcher.core.GameEnvironment
 import com.droiddeck.launcher.runtime.LinuxRuntime
 import org.json.JSONObject
@@ -12,6 +13,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
@@ -22,7 +27,9 @@ class GameEnvironmentStoreTest {
     @Before fun setUp() {
         context = RuntimeEnvironment.getApplication()
         guest = File(LinuxRuntime.rootDir(context), "root/.config/droiddeck/game-environment.json")
+        guest.parentFile?.let { if (it.isFile) it.delete(); it.mkdirs() }
         File(context.filesDir, "game-environment.json").delete()
+        AtomicFile(File(context.filesDir, "power-vr-graphics.json")).delete()
     }
 
     @Test fun savedSettingsAndPublishedSettingsPreserveUnsetsAndLiteralValues() {
@@ -89,5 +96,114 @@ class GameEnvironmentStoreTest {
         val config = GameEnvironment.Config(shared = mapOf("DXVK_ASYNC" to "1"))
         GameEnvironmentStore.save(context, config)
         assertEquals(config, GameEnvironmentStore.read(context))
+    }
+
+    @Test fun standardGraphicsChoicePersistsAndRepublishesWithoutChangingRawEnvironment() {
+        val config = GameEnvironment.Config(
+            shared = mapOf("DISABLE_WSI_LAYER" to "user", "PROTON_USE_WINED3D" to null),
+            games = mapOf("42" to mapOf("DROIDDECK_PROTON_WRAPPER" to "/user/wrapper")),
+        )
+        GameEnvironmentStore.save(context, config)
+
+        PowerVrGraphicsProfile.useStandard(context)
+
+        assertEquals(PowerVrGraphicsProfile.Choice(PowerVrGraphicsProfile.Mode.STANDARD), PowerVrGraphicsProfile.choice(context))
+        assertEquals(config, GameEnvironmentStore.read(context))
+        val published = JSONObject(guest.readText())
+        assertFalse(published.has(GameEnvironmentStore.GRAPHICS_PROFILE))
+        assertEquals("user", published.getJSONObject("shared").getString("DISABLE_WSI_LAYER"))
+        assertTrue(published.getJSONObject("shared").isNull("PROTON_USE_WINED3D"))
+        assertEquals("/user/wrapper", published.getJSONObject("games").getJSONObject("42").getString("DROIDDECK_PROTON_WRAPPER"))
+    }
+
+    @Test fun corruptGraphicsChoiceReturnsUndecided() {
+        File(context.filesDir, "power-vr-graphics.json").writeText("{not json")
+        assertEquals(PowerVrGraphicsProfile.Choice(PowerVrGraphicsProfile.Mode.UNDECIDED), PowerVrGraphicsProfile.choice(context))
+    }
+
+    @Test fun failedGuestRepublishRollsBackTheGraphicsChoice() {
+        val version = "a".repeat(64)
+        File(context.filesDir, "power-vr-graphics.json").writeText(
+            JSONObject().put("format", 1).put("mode", "experimental").put("version", version).toString(),
+        )
+        val blocker = guest.parentFile!!
+        blocker.deleteRecursively()
+        blocker.parentFile!!.mkdirs()
+        blocker.writeText("not a directory")
+        try {
+            assertTrue(runCatching { PowerVrGraphicsProfile.useStandard(context) }.isFailure)
+            assertEquals(
+                PowerVrGraphicsProfile.Choice(PowerVrGraphicsProfile.Mode.EXPERIMENTAL, version),
+                PowerVrGraphicsProfile.choice(context),
+            )
+        } finally {
+            blocker.delete()
+            blocker.mkdirs()
+        }
+    }
+
+    @Test fun canceledConditionalChoiceRollsBackItsPublishedSelection() {
+        val checks = AtomicInteger()
+        val committed = PowerVrGraphicsProfile.useStandardIf(context) { checks.incrementAndGet() == 1 }
+
+        assertFalse(committed)
+        assertEquals(2, checks.get())
+        assertEquals(
+            PowerVrGraphicsProfile.Choice(PowerVrGraphicsProfile.Mode.UNDECIDED),
+            PowerVrGraphicsProfile.choice(context),
+        )
+        assertFalse(JSONObject(guest.readText()).has(GameEnvironmentStore.GRAPHICS_PROFILE))
+    }
+
+    @Test fun canceledOlderTransitionCannotRollbackANewerChoice() {
+        val oldAtCommit = CountDownLatch(1)
+        val releaseOld = CountDownLatch(1)
+        val newStarted = CountDownLatch(1)
+        val newDone = CountDownLatch(1)
+        val checks = AtomicInteger()
+        val error = AtomicReference<Throwable?>()
+        val old = Thread {
+            try {
+                PowerVrGraphicsProfile.useStandardIf(context) {
+                    if (checks.incrementAndGet() == 1) true else {
+                        oldAtCommit.countDown()
+                        releaseOld.await()
+                        false
+                    }
+                }
+            } catch (failure: Throwable) {
+                error.compareAndSet(null, failure)
+            }
+        }
+        val newer = Thread {
+            newStarted.countDown()
+            try {
+                PowerVrGraphicsProfile.useStandardIf(context) { true }
+            } catch (failure: Throwable) {
+                error.compareAndSet(null, failure)
+            } finally {
+                newDone.countDown()
+            }
+        }
+
+        old.start()
+        try {
+            assertTrue(oldAtCommit.await(2, TimeUnit.SECONDS))
+            newer.start()
+            assertTrue(newStarted.await(2, TimeUnit.SECONDS))
+            assertFalse(newDone.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            releaseOld.countDown()
+            old.join(2_000)
+            if (newer.state != Thread.State.NEW) newer.join(2_000)
+        }
+
+        error.get()?.let { throw AssertionError(it) }
+        assertFalse(old.isAlive)
+        assertFalse(newer.isAlive)
+        assertEquals(
+            PowerVrGraphicsProfile.Choice(PowerVrGraphicsProfile.Mode.STANDARD),
+            PowerVrGraphicsProfile.choice(context),
+        )
     }
 }

@@ -19,6 +19,9 @@ def source_assets(overlay=OVERLAY):
         result[desktop / 'firefox-droiddeck.js'] = 'assets/linuxfs/usr/lib/firefox/defaults/pref/droiddeck.js'
         result[desktop / 'droiddeck-clipboard.desktop'] = 'assets/linuxfs/etc/xdg/autostart/droiddeck-clipboard.desktop'
         result[overlay.parent.parent / 'mangoapp/mangoapp'] = 'assets/linuxfs/usr/local/bin/mangoapp'
+        profile = overlay.parent.parent / 'hybris'
+        result[profile / 'run-proton.py'] = 'assets/graphics-profile/run-proton.py'
+        result[profile / 'graphics-profile.json'] = 'assets/graphics-profile/manifest.json'
     return result
 
 

@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.toArgb
 import com.droiddeck.launcher.gpu.FrameGen
 import com.droiddeck.launcher.gpu.TurnipDriver
 import com.droiddeck.launcher.gpu.Lossless
+import com.droiddeck.launcher.gpu.SystemVulkanDriver
 import com.droiddeck.launcher.runtime.LinuxRuntime
 import com.droiddeck.launcher.runtime.DesktopCatalog
 import com.droiddeck.launcher.runtime.LinuxRuntimeInstaller
@@ -44,6 +45,7 @@ import com.droiddeck.launcher.session.GameSaves
 import com.droiddeck.launcher.session.SessionLogShare
 import com.droiddeck.launcher.session.SessionPrefs
 import com.droiddeck.launcher.session.SteamRepair
+import com.droiddeck.launcher.session.PowerVrGraphicsProfile
 import com.droiddeck.launcher.ui.ProtonPage
 import com.droiddeck.launcher.core.CpuCores
 import com.droiddeck.launcher.core.PhantomProcessLimit
@@ -71,6 +73,11 @@ import com.droiddeck.launcher.frontend.GameFileSync
 import com.droiddeck.launcher.frontend.GameLaunchIntent
 import com.droiddeck.launcher.ui.DroidDeckTheme
 import com.droiddeck.launcher.ui.RomsDialog
+import com.droiddeck.launcher.ui.PowerVrGraphicsDialog
+import com.droiddeck.launcher.ui.PowerVrGraphicsDialogPurpose
+import com.droiddeck.launcher.ui.PowerVrGraphicsUiState
+import com.droiddeck.launcher.ui.PowerVrLaunchCoordinator
+import com.droiddeck.launcher.ui.PowerVrLaunchPriority
 import com.droiddeck.launcher.files.InAppFilePicker
 import com.droiddeck.launcher.session.SessionArtifacts
 import com.droiddeck.launcher.session.SessionPhase
@@ -159,6 +166,10 @@ class MainActivity : ComponentActivity() {
     private var phantomWarning by mutableStateOf<String?>(null)
     private var phantomProcessStatus by mutableStateOf(PhantomProcessStatus.NOT_APPLICABLE)
     private var showPhantomGate by mutableStateOf(false)
+    private var powerVrGraphicsDialog by mutableStateOf<PowerVrGraphicsUiState?>(null)
+    private var powerVrGraphicsStatus by mutableStateOf<String?>(null)
+    private val powerVrLaunch = PowerVrLaunchCoordinator<Intent>()
+    @Volatile private var powerVrStatusGeneration = 0
     private var directAudio by mutableStateOf(false)
     private var stretch16x9 by mutableStateOf(false)
     private var launcherFullscreen by mutableStateOf(true)
@@ -523,6 +534,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         readGameIntent(intent)
+        restorePendingPowerVrLaunch(savedInstanceState)
         gameSyncFolder = GameFileSync.folder(this)
         displayManager = getSystemService(DISPLAY_SERVICE) as DisplayManager
         refreshPhantomStatus()
@@ -857,6 +869,15 @@ class MainActivity : ComponentActivity() {
                     onConfirm = { showRemove = false; removeRuntime() },
                     onDismiss = { showRemove = false },
                 )
+                powerVrGraphicsDialog?.let { state ->
+                    PowerVrGraphicsDialog(
+                        state = state,
+                        onStandard = { chooseStandardPowerVrGraphics() },
+                        onExperimental = { chooseExperimentalPowerVrGraphics() },
+                        onCancel = { cancelPowerVrGraphicsOperation() },
+                        onDismiss = { dismissPowerVrGraphicsDialog() },
+                    )
+                }
                 flood?.let { f -> com.droiddeck.launcher.ui.LaunchFlood(f.from, onProgress = { floodProgress = it }) { launchFlooded(f) } }
                 returning?.let { r ->
                     com.droiddeck.launcher.ui.FloodReturn(androidx.compose.ui.graphics.Color(r.color), r.to, onProgress = { floodProgress = it }) {
@@ -990,6 +1011,7 @@ class MainActivity : ComponentActivity() {
         refreshHomeAppState()
         refreshSecondScreenDisplays()
         refresh()
+        finishPendingPowerVrLaunch()
         decky.deckyInstalled = DeckyManager.installed(this)
         DeckyManager.syncCefMarker(this)
         decky.deckySupervisor = DeckyManager.supervisorEnabled(this)
@@ -1013,8 +1035,15 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        powerVrLaunch.cancel()
+        powerVrStatusGeneration++
         updates.unregister()
         super.onDestroy()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        powerVrLaunch.pendingValue()?.let { outState.putParcelable(STATE_POWER_VR_LAUNCH, Intent(it)) }
+        super.onSaveInstanceState(outState)
     }
 
     override fun onStop() {
@@ -1248,6 +1277,7 @@ class MainActivity : ComponentActivity() {
                 sdrZeroCopy = sdrZeroCopy,
                 upscaler = upscaler, upscaleSharpness = upscaleSharpness,
                 gpuDrivers = drivers.summary(),
+                powerVrGraphics = if (mode == SessionService.MODE_STEAM) powerVrGraphicsStatus else null,
                 touchMode = touchMode,
                 suspendPolicy = suspendPolicy,
                 steamDownloadsInBackground = steamDownloadsInBackground,
@@ -1301,6 +1331,7 @@ class MainActivity : ComponentActivity() {
                 onHdr = { on -> SessionPrefs.setHdr(this, mode, on); hdrOn = on },
                 onSdrZeroCopy = { on -> SessionPrefs.setSdrZeroCopy(this, mode, on); sdrZeroCopy = on },
                 onGpuDrivers = { openComponents(focusContent = true, tab = com.droiddeck.launcher.ui.GPU_TAB) },
+                onPowerVrGraphics = { openPowerVrGraphicsSettings() },
                 onFpsLimit = { fps -> SessionPrefs.setFpsLimit(this, mode, fps); fpsLimit = fps },
                 onUpscaler = { m -> SessionPrefs.setUpscaler(this, m); upscaler = m },
                 onUpscaleSharpness = { pct -> SessionPrefs.setUpscaleSharpness(this, pct); upscaleSharpness = pct },
@@ -1501,6 +1532,7 @@ class MainActivity : ComponentActivity() {
         refreshWifiDiscovery()
         gameStorage = SessionPrefs.gameStorage(this)
         storageDiagnostics = SessionPrefs.storageDiagnosticsEnabled(this)
+        if (mode == SessionService.MODE_STEAM) refreshPowerVrGraphicsStatus()
         settingsMode = mode
         // The page opens at once, on what was last read; the slow part (driver files, a walk of the
         // added-games folders, the storage volumes) lands while it animates in.
@@ -1564,6 +1596,7 @@ class MainActivity : ComponentActivity() {
         offline = OfflineMode.enabled(this)
         installed = LinuxRuntimeInstaller.installedVersion(this)
         ready = LinuxRuntime.isInstalled(this)
+        refreshPowerVrGraphicsStatus()
         removalPending = LinuxRuntimeInstaller.hasRemovalPending(this)
         frameGenLabel = FrameGen.label(this)
         romsDir = SessionPrefs.romsDir(this).takeIf { it.isNotEmpty() }
@@ -1632,8 +1665,257 @@ class MainActivity : ComponentActivity() {
         }
         val warn = installed == null && !com.droiddeck.launcher.core.DeviceSupport.adreno()
         if (warn && available != null) { showNonAdreno = available; return false }
+        if (steamSession && deferPowerVrSteamLaunch(intent)) return true
         startActivity(intent)
         return true
+    }
+
+    /**
+     * Owns one exact Steam launch while the PowerVR choice is resolved. Returning true means the
+     * request was accepted, so a game-link caller may clear its own copy without starting twice.
+     */
+    private fun deferPowerVrSteamLaunch(launch: Intent): Boolean {
+        if (!SystemVulkanDriver.isPowerVr() || !LinuxRuntime.isInstalled(this)) return false
+        val priority = if (launch.hasExtra(SessionService.EXTRA_STEAM_URL)) {
+            PowerVrLaunchPriority.GAME
+        } else {
+            PowerVrLaunchPriority.GENERIC
+        }
+        if (powerVrLaunch.defer(Intent(launch), priority)) inspectPendingPowerVrLaunch()
+        return true
+    }
+
+    private fun inspectPendingPowerVrLaunch() {
+        if (powerVrLaunch.pendingValue() == null) return
+        val operation = powerVrLaunch.nextOperation()
+        val compatible = SystemVulkanDriver.usesDefault(SessionPrefs.linuxDriver(this))
+        Thread({
+            var observed = PowerVrGraphicsProfile.Choice(PowerVrGraphicsProfile.Mode.UNDECIDED)
+            try {
+                observed = PowerVrGraphicsProfile.choice(this)
+                when {
+                    observed.mode == PowerVrGraphicsProfile.Mode.STANDARD -> {
+                        completePowerVrChoice(operation, R.string.power_vr_graphics_standard_status)
+                    }
+                    observed.mode == PowerVrGraphicsProfile.Mode.EXPERIMENTAL && compatible &&
+                        observed.version != null && PowerVrGraphicsProfile.isInstalled(this, observed.version) -> {
+                        // Re-publish what is current without re-saving the stale value observed above.
+                        val published = PowerVrGraphicsProfile.republishIf(this) { powerVrLaunch.isCurrent(operation) }
+                        if (published != null) completePowerVrChoice(
+                            operation,
+                            if (published.mode == PowerVrGraphicsProfile.Mode.STANDARD) {
+                                R.string.power_vr_graphics_standard_status
+                            } else {
+                                R.string.power_vr_graphics_experimental_status
+                            },
+                        )
+                    }
+                    else -> {
+                        val purpose = if (observed.mode == PowerVrGraphicsProfile.Mode.EXPERIMENTAL) {
+                            PowerVrGraphicsDialogPurpose.REPAIR
+                        } else {
+                            PowerVrGraphicsDialogPurpose.FIRST_LAUNCH
+                        }
+                        val state = readPowerVrGraphicsState(purpose, observed, compatible)
+                        ui.post {
+                            if (powerVrLaunch.isCurrent(operation) && powerVrLaunch.pendingValue() != null && !isDestroyed) {
+                                powerVrGraphicsDialog = state
+                            }
+                        }
+                    }
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "PowerVR graphics launch preparation failed", error)
+                ui.post {
+                    if (powerVrLaunch.isCurrent(operation) && powerVrLaunch.pendingValue() != null && !isDestroyed) {
+                        powerVrGraphicsDialog = PowerVrGraphicsUiState(
+                            purpose = if (observed.mode == PowerVrGraphicsProfile.Mode.EXPERIMENTAL) {
+                                PowerVrGraphicsDialogPurpose.REPAIR
+                            } else {
+                                PowerVrGraphicsDialogPurpose.FIRST_LAUNCH
+                            },
+                            mode = observed.mode,
+                            selectedVersion = observed.version,
+                            compatible = compatible,
+                            failed = true,
+                            failureMessage = error.message,
+                        )
+                    }
+                }
+            }
+        }, "power-vr-launch").start()
+    }
+
+    private fun readPowerVrGraphicsState(
+        purpose: PowerVrGraphicsDialogPurpose,
+        choice: PowerVrGraphicsProfile.Choice = PowerVrGraphicsProfile.choice(this),
+        compatible: Boolean = SystemVulkanDriver.usesDefault(SessionPrefs.linuxDriver(this)),
+    ): PowerVrGraphicsUiState {
+        val available = PowerVrGraphicsProfile.currentVersion(this)
+        val selectedInstalled = choice.version?.let { PowerVrGraphicsProfile.isInstalled(this, it) } == true
+        val availableInstalled = if (choice.version == available) selectedInstalled
+            else PowerVrGraphicsProfile.isInstalled(this, available)
+        return PowerVrGraphicsUiState(
+            purpose = purpose,
+            mode = choice.mode,
+            selectedVersion = choice.version,
+            availableVersion = available,
+            selectedInstalled = selectedInstalled,
+            availableInstalled = availableInstalled,
+            compatible = compatible,
+        )
+    }
+
+    private fun openPowerVrGraphicsSettings() {
+        if (!SystemVulkanDriver.isPowerVr() || !LinuxRuntime.isInstalled(this)) return
+        val operation = powerVrLaunch.nextOperation()
+        val compatible = SystemVulkanDriver.usesDefault(SessionPrefs.linuxDriver(this))
+        powerVrGraphicsDialog = PowerVrGraphicsUiState(
+            purpose = PowerVrGraphicsDialogPurpose.SETTINGS,
+            compatible = compatible,
+            loading = true,
+        )
+        Thread({
+            try {
+                val state = readPowerVrGraphicsState(PowerVrGraphicsDialogPurpose.SETTINGS, compatible = compatible)
+                ui.post {
+                    if (powerVrLaunch.isCurrent(operation) && powerVrGraphicsDialog != null && !isDestroyed) {
+                        powerVrGraphicsDialog = state
+                    }
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "PowerVR graphics settings failed", error)
+                ui.post {
+                    if (powerVrLaunch.isCurrent(operation) && powerVrGraphicsDialog != null && !isDestroyed) {
+                        powerVrGraphicsDialog = powerVrGraphicsDialog?.copy(loading = false, failed = true, failureMessage = error.message)
+                    }
+                }
+            }
+        }, "power-vr-settings").start()
+    }
+
+    private fun chooseStandardPowerVrGraphics() {
+        val current = powerVrGraphicsDialog ?: return
+        val operation = powerVrLaunch.nextOperation()
+        powerVrGraphicsDialog = current.copy(working = true, progress = -1, failed = false, failureMessage = null)
+        Thread({
+            try {
+                if (PowerVrGraphicsProfile.useStandardIf(this) { powerVrLaunch.isCurrent(operation) }) {
+                    completePowerVrChoice(operation, R.string.power_vr_graphics_standard_status)
+                }
+            } catch (error: Exception) {
+                failPowerVrChoice(operation, "Selecting standard PowerVR graphics failed", error)
+            }
+        }, "power-vr-standard").start()
+    }
+
+    private fun chooseExperimentalPowerVrGraphics() {
+        val current = powerVrGraphicsDialog ?: return
+        if (!current.compatible) return
+        val operation = powerVrLaunch.nextOperation()
+        powerVrGraphicsDialog = current.copy(working = true, progress = -1, failed = false, failureMessage = null)
+        Thread({
+            try {
+                val wanted = current.availableVersion ?: PowerVrGraphicsProfile.currentVersion(this)
+                val installedVersion = if (PowerVrGraphicsProfile.isInstalled(this, wanted)) wanted
+                    else PowerVrGraphicsProfile.install(this) { progress ->
+                        ui.post {
+                            if (powerVrLaunch.isCurrent(operation) && powerVrGraphicsDialog != null && !isDestroyed) {
+                                powerVrGraphicsDialog = powerVrGraphicsDialog?.copy(progress = progress)
+                            }
+                        }
+                    }
+                if (PowerVrGraphicsProfile.enableIf(this, installedVersion) { powerVrLaunch.isCurrent(operation) }) {
+                    completePowerVrChoice(operation, R.string.power_vr_graphics_experimental_status)
+                }
+            } catch (error: Exception) {
+                failPowerVrChoice(operation, "Selecting experimental PowerVR graphics failed", error)
+            }
+        }, "power-vr-experimental").start()
+    }
+
+    private fun failPowerVrChoice(operation: Long, message: String, error: Exception) {
+        Log.e(TAG, message, error)
+        ui.post {
+            if (powerVrLaunch.isCurrent(operation) && powerVrGraphicsDialog != null && !isDestroyed) {
+                powerVrGraphicsDialog = powerVrGraphicsDialog?.copy(working = false, progress = -1, failed = true, failureMessage = error.message)
+            }
+        }
+    }
+
+    private fun completePowerVrChoice(operation: Long, status: Int) {
+        ui.post {
+            if (!powerVrLaunch.isCurrent(operation) || isFinishing || isDestroyed) return@post
+            powerVrGraphicsStatus = getString(status)
+            powerVrGraphicsDialog = null
+            if (powerVrLaunch.markReady(operation)) finishPendingPowerVrLaunch()
+        }
+    }
+
+    private fun finishPendingPowerVrLaunch() {
+        if (isFinishing || isDestroyed || !lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) return
+        val launch = powerVrLaunch.takeReady() ?: return
+        powerVrGraphicsDialog = null
+        powerVrLaunch.nextOperation()
+        startActivity(launch)
+    }
+
+    private fun cancelPowerVrGraphicsOperation() {
+        powerVrLaunch.cancel()
+    }
+
+    private fun dismissPowerVrGraphicsDialog() {
+        powerVrGraphicsDialog = null
+        refreshPowerVrGraphicsStatus()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun restorePendingPowerVrLaunch(state: Bundle?) {
+        val launch = state?.getParcelable<Intent>(STATE_POWER_VR_LAUNCH) ?: return
+        if (!SystemVulkanDriver.isPowerVr() || !LinuxRuntime.isInstalled(this)) return
+        val priority = if (launch.hasExtra(SessionService.EXTRA_STEAM_URL)) {
+            PowerVrLaunchPriority.GAME
+        } else {
+            PowerVrLaunchPriority.GENERIC
+        }
+        if (powerVrLaunch.defer(Intent(launch), priority)) inspectPendingPowerVrLaunch()
+    }
+
+    private fun refreshPowerVrGraphicsStatus() {
+        val generation = ++powerVrStatusGeneration
+        if (!SystemVulkanDriver.isPowerVr() || !LinuxRuntime.isInstalled(this)) {
+            powerVrGraphicsStatus = null
+            return
+        }
+        if (powerVrGraphicsStatus == null) powerVrGraphicsStatus = getString(R.string.power_vr_graphics_checking)
+        Thread({
+            try {
+                val choice = PowerVrGraphicsProfile.choice(this)
+                val current = if (choice.mode == PowerVrGraphicsProfile.Mode.EXPERIMENTAL) {
+                    PowerVrGraphicsProfile.currentVersion(this)
+                } else null
+                val installed = choice.version?.let { PowerVrGraphicsProfile.isInstalled(this, it) } == true
+                ui.post {
+                    if (powerVrStatusGeneration != generation || isDestroyed) return@post
+                    powerVrGraphicsStatus = getString(when (choice.mode) {
+                        PowerVrGraphicsProfile.Mode.UNDECIDED -> R.string.power_vr_graphics_choose_before_launch
+                        PowerVrGraphicsProfile.Mode.STANDARD -> R.string.power_vr_graphics_standard_status
+                        PowerVrGraphicsProfile.Mode.EXPERIMENTAL -> when {
+                            !installed -> R.string.power_vr_graphics_experimental_repair_status
+                            current != null && current != choice.version -> R.string.power_vr_graphics_experimental_update_status
+                            else -> R.string.power_vr_graphics_experimental_status
+                        }
+                    })
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "PowerVR graphics status failed", error)
+                ui.post {
+                    if (powerVrStatusGeneration == generation && !isDestroyed) {
+                        powerVrGraphicsStatus = getString(R.string.power_vr_graphics_choose_before_launch)
+                    }
+                }
+            }
+        }, "power-vr-status").start()
     }
 
     private fun refreshPhantomStatus() {
@@ -1720,6 +2002,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val MEDIA_SETTLE_MS = 1500L
+        private const val STATE_POWER_VR_LAUNCH = "power-vr-launch"
         /** What the picker offers for a driver zip; some file apps label a zip as a plain stream. */
         private val ZIP_EXT = listOf("zip")
         private val WCP_EXT = listOf("wcp")

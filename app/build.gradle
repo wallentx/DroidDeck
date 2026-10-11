@@ -203,11 +203,19 @@ def stageSessionScripts = tasks.register('stageSessionScripts', Copy) {
 }
 tasks.named('preBuild').configure { dependsOn(stageSessionScripts) }
 
+// Keep the optional graphics install recipe and wrapper aligned with this APK.
+// The large, checksum-pinned DXVK/WSI payloads are downloaded only after opt-in.
+def stageGraphicsProfile = tasks.register('stageGraphicsProfile', Copy) {
+    from(rootProject.file('tools/hybris/run-proton.py'))
+    from(rootProject.file('tools/hybris/graphics-profile.json')) { rename { 'manifest.json' } }
+    into(layout.projectDirectory.dir('src/main/assets/graphics-profile'))
+}
+
 // Prepared audio lives under build/, so native builds never rewrite the tracked base bundle.
 // Copying into one asset root also prevents an old base bundle winning a duplicate asset merge.
 def runtimeAssetsDir = layout.buildDirectory.dir('runtimeAssets')
 def stageRuntimeAssets = tasks.register('stageRuntimeAssets', Sync) {
-    dependsOn(stageSessionScripts)
+    dependsOn(stageSessionScripts, stageGraphicsProfile)
     from(layout.projectDirectory.dir('src/main/assets')) { exclude 'pulseaudio.tzst' }
     from(layout.buildDirectory.dir('prepared-assets'))
     into(runtimeAssetsDir)

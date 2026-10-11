@@ -37,14 +37,8 @@ public final class SystemVulkanDriver {
 
     /** APK-versioned directories stay intact while an older session still has libraries mapped. */
     public static synchronized File prepare(Context context) throws IOException {
-        String version;
-        try (BufferedReader input = new BufferedReader(new InputStreamReader(
-                context.getAssets().open("hybris/version.txt"), StandardCharsets.US_ASCII))) {
-            version = input.readLine();
-        }
-        if (version == null || !version.matches("[0-9a-f]{64}")) throw new IOException("Invalid system Vulkan runtime version");
-        File base = new File(context.getFilesDir(), "system_vulkan");
-        File target = new File(base, version);
+        File target = runtimeDirectory(context);
+        File base = target.getParentFile();
         if (complete(target)) return target;
         if (!base.isDirectory() && !base.mkdirs()) throw new IOException("Cannot create system Vulkan directory");
         File staged = new File(base, ".stage-" + UUID.randomUUID());
@@ -59,7 +53,7 @@ public final class SystemVulkanDriver {
             manifest.put("file_format_version", "1.0.0");
             manifest.put("ICD", library);
             Files.write(new File(staged, "icd.json").toPath(), manifest.toString().getBytes(StandardCharsets.UTF_8));
-            if (target.exists()) throw new IOException("Incomplete system Vulkan runtime directory: " + version);
+            if (target.exists()) throw new IOException("Incomplete system Vulkan runtime directory: " + target.getName());
             if (!staged.renameTo(target)) throw new IOException("Cannot publish system Vulkan runtime");
             return target;
         } catch (org.json.JSONException error) {
@@ -67,6 +61,17 @@ public final class SystemVulkanDriver {
         } finally {
             if (staged.exists()) FileUtils.delete(staged);
         }
+    }
+
+    /** The current APK's versioned runtime path, without extracting or modifying it. */
+    public static File runtimeDirectory(Context context) throws IOException {
+        String version;
+        try (BufferedReader input = new BufferedReader(new InputStreamReader(
+                context.getAssets().open("hybris/version.txt"), StandardCharsets.US_ASCII))) {
+            version = input.readLine();
+        }
+        if (version == null || !version.matches("[0-9a-f]{64}")) throw new IOException("Invalid system Vulkan runtime version");
+        return new File(new File(context.getFilesDir(), "system_vulkan"), version);
     }
 
     private static boolean complete(File directory) {

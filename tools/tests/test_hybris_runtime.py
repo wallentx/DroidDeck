@@ -13,6 +13,17 @@ spec.loader.exec_module(runtime)
 
 
 class HybrisRuntimeTest(unittest.TestCase):
+    def test_graphics_profile_manifest_matches_the_shipped_wrapper(self):
+        profile = Path(__file__).resolve().parents[1] / "hybris"
+        runtime.check_graphics_profile((profile / "graphics-profile.json").read_bytes(),
+                                       (profile / "run-proton.py").read_bytes())
+
+    def test_changed_graphics_wrapper_requires_a_new_manifest(self):
+        profile = Path(__file__).resolve().parents[1] / "hybris"
+        with self.assertRaisesRegex(ValueError, "graphics profile wrapper checksum mismatch"):
+            runtime.check_graphics_profile((profile / "graphics-profile.json").read_bytes(),
+                                           (profile / "run-proton.py").read_bytes() + b"\n# changed\n")
+
     def fixture(self, missing=None, machine=b"\xb7\x00", stale=False, unsafe=False):
         elf = bytearray(64)
         elf[:6] = b"\x7fELF\x02\x01"

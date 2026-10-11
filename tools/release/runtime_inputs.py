@@ -14,6 +14,7 @@ MANIFEST = Path('app/build/runtime-inputs.json')
 SOURCE_PATHS = ['app/build.gradle', 'app/src/main/cpp/fakeinput_steam.cpp', 'app/src/main/assets/pulseaudio.tzst',
                 'tools/linuxfs', 'tools/proot', 'tools/aaudio-sink', 'tools/directaudio',
                 'tools/gamescope/release.env', 'tools/droiddeck-esync/release.env',
+                'tools/hybris/run-proton.py', 'tools/hybris/graphics-profile.json',
                 'tools/mangoapp', 'tools/msitools', 'tools/build_local.sh',
                 'tools/release/runtime_inputs.py']
 
@@ -39,7 +40,7 @@ def sources(root):
 
 def outputs(root):
     result = {}
-    for tree in ['linuxfs', 'directaudio', 'droiddeck-esync']:
+    for tree in ['linuxfs', 'directaudio', 'droiddeck-esync', 'graphics-profile']:
         base = root / 'app/src/main/assets' / tree
         for path in base.rglob('*'):
             if path.is_file() and not any(part.startswith('.') for part in path.relative_to(base).parts):
@@ -67,6 +68,7 @@ def required():
                   ['aarch64-unix/winedirectaudio.so', 'aarch64-windows/winedirectaudio.drv',
                    'i386-windows/winedirectaudio.drv', 'version.txt']]
     paths += ['assets/droiddeck-esync/index.json', 'assets/droiddeck-esync/index.json.sig',
+              'assets/graphics-profile/manifest.json', 'assets/graphics-profile/run-proton.py',
               'lib/arm64-v8a/libproot.so', 'lib/arm64-v8a/libproot-loader.so',
               'lib/arm64-v8a/libdirectaudiorelay.so', 'assets/pulseaudio.tzst']
     return paths
