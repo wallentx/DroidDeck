@@ -1692,23 +1692,17 @@ class MainActivity : ComponentActivity() {
         Thread({
             var observed = PowerVrGraphicsProfile.Choice(PowerVrGraphicsProfile.Mode.UNDECIDED)
             try {
-                observed = PowerVrGraphicsProfile.choice(this)
+                // A previous activity may still be rolling back a cancelled choice. Wait for
+                // that transaction and branch only on the settled, republished selection.
+                observed = PowerVrGraphicsProfile.republishIf(this) { powerVrLaunch.isCurrent(operation) }
+                    ?: return@Thread
                 when {
                     observed.mode == PowerVrGraphicsProfile.Mode.STANDARD -> {
                         completePowerVrChoice(operation, R.string.power_vr_graphics_standard_status)
                     }
                     observed.mode == PowerVrGraphicsProfile.Mode.EXPERIMENTAL && compatible &&
                         observed.version != null && PowerVrGraphicsProfile.isInstalled(this, observed.version) -> {
-                        // Re-publish what is current without re-saving the stale value observed above.
-                        val published = PowerVrGraphicsProfile.republishIf(this) { powerVrLaunch.isCurrent(operation) }
-                        if (published != null) completePowerVrChoice(
-                            operation,
-                            if (published.mode == PowerVrGraphicsProfile.Mode.STANDARD) {
-                                R.string.power_vr_graphics_standard_status
-                            } else {
-                                R.string.power_vr_graphics_experimental_status
-                            },
-                        )
+                        completePowerVrChoice(operation, R.string.power_vr_graphics_experimental_status)
                     }
                     else -> {
                         val purpose = if (observed.mode == PowerVrGraphicsProfile.Mode.EXPERIMENTAL) {

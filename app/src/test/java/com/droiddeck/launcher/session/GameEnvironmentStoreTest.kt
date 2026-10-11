@@ -206,4 +206,56 @@ class GameEnvironmentStoreTest {
             PowerVrGraphicsProfile.choice(context),
         )
     }
+
+    @Test fun republishWaitsForRollbackBeforeResolvingARecreatedLaunch() {
+        val oldAtCommit = CountDownLatch(1)
+        val releaseOld = CountDownLatch(1)
+        val readerStarted = CountDownLatch(1)
+        val readerDone = CountDownLatch(1)
+        val checks = AtomicInteger()
+        val result = AtomicReference<PowerVrGraphicsProfile.Choice?>()
+        val error = AtomicReference<Throwable?>()
+        val old = Thread {
+            try {
+                PowerVrGraphicsProfile.useStandardIf(context) {
+                    if (checks.incrementAndGet() == 1) true else {
+                        oldAtCommit.countDown()
+                        releaseOld.await()
+                        false
+                    }
+                }
+            } catch (failure: Throwable) {
+                error.compareAndSet(null, failure)
+            }
+        }
+        val reader = Thread {
+            readerStarted.countDown()
+            try {
+                result.set(PowerVrGraphicsProfile.republishIf(context) { true })
+            } catch (failure: Throwable) {
+                error.compareAndSet(null, failure)
+            } finally {
+                readerDone.countDown()
+            }
+        }
+
+        old.start()
+        try {
+            assertTrue(oldAtCommit.await(2, TimeUnit.SECONDS))
+            assertEquals(PowerVrGraphicsProfile.Mode.STANDARD, PowerVrGraphicsProfile.choice(context).mode)
+            reader.start()
+            assertTrue(readerStarted.await(2, TimeUnit.SECONDS))
+            assertFalse(readerDone.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            releaseOld.countDown()
+            old.join(2_000)
+            if (reader.state != Thread.State.NEW) reader.join(2_000)
+        }
+
+        error.get()?.let { throw AssertionError(it) }
+        assertFalse(old.isAlive)
+        assertFalse(reader.isAlive)
+        assertEquals(PowerVrGraphicsProfile.Choice(PowerVrGraphicsProfile.Mode.UNDECIDED), result.get())
+        assertFalse(JSONObject(guest.readText()).has(GameEnvironmentStore.GRAPHICS_PROFILE))
+    }
 }
