@@ -1,0 +1,81 @@
+name: Build experimental Box64
+on:
+  push:
+    paths:
+      - 'tools/box64/**'
+      - '.github/workflows/build-box64.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install probe compiler
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: Compare with native x86-64 Linux
+        run: |
+          bash tools/box64/tests/build.sh out/probes
+          timeout 15 out/probes/control
+          timeout 15 out/probes/int80
+          for mode in disk memfd unlinked libc-memfd libc-syscall; do
+            timeout 15 out/probes/fd-load "$PWD/out/probes/module.so" "$mode"
+          done
+  box64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    needs: native-reference
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gcc g++ gcc-x86-64-linux-gnu python3 clang lld zstd ripgrep
+      - name: Build pinned experimental component
+        run: bash tools/box64/build.sh out/box64
+      - name: Check exported trace wrapper
+        run: readelf --dyn-syms out/box64/box64 | rg 'my_memfd_create$'
+      - name: Check translated syscalls
+        env:
+          BOX64_NORCFILES: '1'
+          BOX64_LOG: '1'
+          X86_CC: x86_64-linux-gnu-gcc
+        run: |
+          bash tools/box64/tests/build.sh out/probes
+          timeout 20 out/box64/box64 out/probes/control
+          timeout 20 out/box64/box64 out/probes/int80
+          BOX64_DYNAREC=0 timeout 20 out/box64/box64 out/probes/int80
+          mkdir -p out/private-memfd
+          chmod 700 out/private-memfd
+          for mode in disk memfd unlinked libc-memfd libc-syscall; do
+            timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" "$mode"
+          done
+          DROIDDECK_BOX64_MEMFD_DIR="$PWD/out/private-memfd" DROIDDECK_BOX64_MEMFD_FORCE_FILE=1 \
+            timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" memfd
+          DROIDDECK_BOX64_MEMFD_DIR=/tmp DROIDDECK_BOX64_MEMFD_FORCE_FILE=1 \
+            timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" bad-directory
+      - name: Check opt-in loader trace
+        env:
+          DROIDDECK_BOX64_LOADER_TRACE: '1'
+          BOX64_LOG: '1'
+          BOX64_NORCFILES: '1'
+        run: |
+          trap 'cat out/loader-trace.log' EXIT
+          for mode in memfd libc-memfd libc-syscall; do
+            timeout 20 out/box64/box64 out/probes/fd-load "$PWD/out/probes/module.so" "$mode" 2>> out/loader-trace.log | tee "out/trace-$mode.stdout"
+            rg "PASS: module load and symbol call through $mode" "out/trace-$mode.stdout"
+          done
+          rg 'abi=i386 event=enter nr=356' out/loader-trace.log
+          rg 'api=libc-memfd flags=0x0 result=' out/loader-trace.log
+          rg 'api=libc-syscall nr=319 flags=0x0 result=' out/loader-trace.log
+          rg 'api=dlopen event=return handle=' out/loader-trace.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: experimental-box64
+          path: |
+            out/box64
+            out/probes
+            out/loader-trace.log
+            out/trace-*.stdout
+          if-no-files-found: error

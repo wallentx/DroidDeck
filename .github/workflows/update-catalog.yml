@@ -21,12 +21,13 @@ jobs:
     timeout-minutes: 5
     steps:
       # Always use the current trusted generator, even when a release event points at an older tag.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
 
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
+        if: github.repository == 'Droid-Deck/DroidDeck'
         id: ci-token
         with:
           app-id: ${{ vars.DROIDDECK_CI_APP_ID }}
@@ -35,6 +36,7 @@ jobs:
           repositories: DroidDeck-CI
 
       - name: Regenerate catalog.json
+        if: github.repository == 'Droid-Deck/DroidDeck'
         env:
           SOURCE_GITHUB_TOKEN: ${{ github.token }}
           CI_GITHUB_TOKEN: ${{ steps.ci-token.outputs.token }}

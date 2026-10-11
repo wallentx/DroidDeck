@@ -245,6 +245,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var pcKeyboardOpen by mutableStateOf(false)
     private var hudOn by mutableStateOf(true)
     private var upscaler by mutableStateOf(0)
+    private var sdrZeroCopy by mutableStateOf(false)
     private var upscaleSharpness by mutableStateOf(75)
     private var effects by mutableStateOf(ScreenEffects.OFF)
     private var textureAnisotropy by mutableStateOf(0)
@@ -371,6 +372,8 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         surfaceView = SurfaceView(this)
         surfaceView.holder.addCallback(this)
+        // Keep a guest gesture attached to a view when the on-screen pad is hidden.
+        surfaceView.setOnTouchListener { _, event -> onTouchEvent(event) }
         root.addView(surfaceView)
 
         val bridge = PadBridge(File(LinuxRuntime.sessionRoot(this), "dev/input"))
@@ -389,7 +392,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             uiHandler.removeCallbacks(cursorHide)
             cursorVisible = false
         }
-        onScreenControls = OnScreenControls(this, bridge, onKeyboard = ::togglePcKeyboard).also { root.addView(it) }
+        onScreenControls = OnScreenControls(this, bridge, onKeyboard = ::togglePcKeyboard, onGuestTouch = ::onTouchEvent).also { root.addView(it) }
         keyboard = KeyboardHost(this).also { root.addView(it) }
         touchpad = TouchpadGestures(PointerGestures.slop(this), pointerListener)
         // One arrow, ours: Android draws a system pointer for a mouse over any window, and the
@@ -522,6 +525,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                     androidApps = androidApps,
                     hudOn = hudOn,
                     upscaler = upscaler, upscaleSharpness = upscaleSharpness,
+                    sdrZeroCopy = sdrZeroCopy, hdrActive = SessionState.hdr,
                     effects = effects, textureAnisotropy = textureAnisotropy, textureLodBias = textureLodBias,
                     frameGen = frameGen,
                     lossless = lossless,
@@ -542,6 +546,10 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                     onUpscaleSharpness = { pct ->
                         SessionPrefs.setUpscaleSharpness(this@SessionActivity, pct); upscaleSharpness = pct
                         WaylandCompositor.nativeSetUpscaleSharpness(pct)
+                    },
+                    onSdrZeroCopy = { on ->
+                        SessionPrefs.setSdrZeroCopy(this@SessionActivity, presentationPrefMode(), on)
+                        applyDisplayLayers()
                     },
                     onEffects = { e ->
                         SessionPrefs.setScreenEffects(this@SessionActivity, e); effects = e
@@ -801,6 +809,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         pipAutoEnter = SessionPrefs.pipAutoEnter(this)
         hudOn = SessionPrefs.hudEnabled(this)
         upscaler = SessionPrefs.upscaler(this)
+        sdrZeroCopy = SessionPrefs.sdrZeroCopy(this, presentationPrefMode())
         upscaleSharpness = SessionPrefs.upscaleSharpness(this)
         effects = SessionPrefs.screenEffects(this)
         textureAnisotropy = SessionPrefs.textureAnisotropy(this)
@@ -827,6 +836,17 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     // ── Compositor ──────────────────────────────────────────────────────────────────────────
+
+    private fun presentationPrefMode(): String = SessionPrefs.prefMode(
+        if (SessionState.running) SessionState.mode
+        else intent.getStringExtra(SessionService.EXTRA_MODE) ?: SessionService.MODE_STEAM,
+    )
+
+    /** The compositor outlives sessions. Reapply on attach/resume as well as a drawer change. */
+    private fun applyDisplayLayers() {
+        sdrZeroCopy = SessionPrefs.sdrZeroCopy(this, presentationPrefMode())
+        WaylandCompositor.nativeSetZeroCopy(SessionPrefs.useDisplayLayers(SessionState.hdr, sdrZeroCopy))
+    }
 
     /** True while the loading screen is installing the Linux runtime or the desktop; the session waits for it. */
     @Volatile private var installingRuntime = false
@@ -975,8 +995,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         // the evdev codes we inject.
         FileUtils.copyAsset(this, "wayland/keymap.xkb", File(runtimeDir, "keymap.xkb"))
 
-        // Turnip, not the system Adreno driver: importing the dma-bufs gamescope commits needs
-        // VK_EXT_image_drm_format_modifier, which the system driver does not implement.
+        // Adreno needs Turnip's DMA-BUF extensions; other GPU families use their system driver.
         val turnip = TurnipDriver(this)
         val driverId = if (CompositorHost.isStarted) null else turnip.install()
 
@@ -1020,8 +1039,8 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             }
         }
         // HDR10: the gate is decided once, when the compositor starts (it lives for the whole app
-        // process), from the panel's own word and the mode's setting. Zero-copy presentation is
-        // what puts an HDR frame on a display layer tagged BT2020_PQ, so it is turned on with it.
+        // process), from the panel's own word and the mode's setting. Display layers remain
+        // required for HDR; SDR has an independent, per-mode preference applied below.
         if (!CompositorHost.isStarted) {
             val mode = SessionPrefs.prefMode(intent.getStringExtra(SessionService.EXTRA_MODE) ?: SessionService.MODE_STEAM)
             val probe = HdrSupport.probe(this)
@@ -1035,7 +1054,6 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             SessionState.hdr = on
             if (on) {
                 try { android.system.Os.setenv("DROIDDECK_WAYLAND_HDR", "1", true) } catch (e: Exception) { Log.w(TAG, "DROIDDECK_WAYLAND_HDR", e) }
-                WaylandCompositor.nativeSetZeroCopy(true)
             }
             WaylandCompositor.nativeSetHdrRequest(
                 if (on) WaylandCompositor.HDR_MODE_ON else WaylandCompositor.HDR_MODE_OFF,
@@ -1044,6 +1062,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             )
             Log.i(TAG, "hdr: " + (if (on) "on" else if (wanted) "wanted but ${probe.reason}" else "off") + " · display ${probe.formats.ifEmpty { "SDR" }}")
         }
+        applyDisplayLayers()
         CompositorHost.startOrAttach(
             holder.surface, runtimeDir.path,
             driverId?.let { turnip.driverPath(it) }, driverId?.let { turnip.libraryName(it) },
@@ -2129,7 +2148,10 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         updatePadMotion()
         readPrefs()
         if (::pip.isInitialized) pip.resumed()
-        if (CompositorHost.isStarted) applyFrameGen()
+        if (CompositorHost.isStarted) {
+            applyDisplayLayers()
+            applyFrameGen()
+        }
     }
 
     override fun onPause() {

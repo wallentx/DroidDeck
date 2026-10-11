@@ -1,0 +1,36 @@
+diff --git a/src/elfs/elfloader.c b/src/elfs/elfloader.c
+--- a/src/elfs/elfloader.c
++++ b/src/elfs/elfloader.c
+@@ -1924,7 +1924,6 @@
+ 
+     char* line = NULL;
+     size_t len = 0;
+-    char buff[1024];
+     int dummy;
+     FILE* f = fopen("/proc/self/maps", "r");
+     if(!f)
+@@ -1935,13 +1934,11 @@
+         uintptr_t start, end;
+         if (sscanf(line, "%zx-%zx", &start, &end)==2) {
+             elfheader_t* h = FindElfAddress(my_context, start);
+-            int l = strlen(line);
++            int l = strcspn(line, "\n");
+             if(h && l<73) {
+-                sprintf(buff, "%s%*s\n", line, 74-l, h->name);
+-                dummy = write(fd, buff, strlen(buff));
++                dummy = dprintf(fd, "%.*s%*s%s\n", l, line, 74-l, "", h->name);
+             } else if(start==(uintptr_t)my_context->stack) {
+-                sprintf(buff, "%s%*s\n", line, 74-l, "[stack]");
+-                dummy = write(fd, buff, strlen(buff));
++                dummy = dprintf(fd, "%.*s%*s%s\n", l, line, l<74 ? 74-l : 1, "", "[stack]");
+             } else if (strstr(line, "[stack]")) {
+                 char* p = strstr(line, "[stack]")-1;
+                 while (*p==' ' || *p=='\t') --p;
+@@ -1953,6 +1950,7 @@
+             }
+         }
+     }
++    free(line);
+     fclose(f);
+     (void)dummy;
+ }

@@ -31,12 +31,13 @@ concurrency:
 jobs:
   authorize:
     if: >-
+      github.repository == 'Droid-Deck/DroidDeck' && (
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request_target' && github.event.label.name == 'publish-test') ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
-       github.event.workflow_run.pull_requests[0] != null)
+       github.event.workflow_run.pull_requests[0] != null))
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
@@ -44,13 +45,13 @@ jobs:
       run_id: ${{ steps.gate.outputs.run_id }}
       head_sha: ${{ steps.gate.outputs.head_sha }}
       base_sha: ${{ steps.gate.outputs.base_sha }}
-      version_code: ${{ steps.gate.outputs.version_code }}
-      label: ${{ steps.gate.outputs.label }}
+      version_code: ${{ steps.inspect.outputs.version_code }}
+      label: ${{ steps.inspect.outputs.label }}
       skip: ${{ steps.gate.outputs.skip }}
       automatic: ${{ steps.gate.outputs.automatic }}
       variants: ${{ steps.variants.outputs.list }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # Every variant a main build ships, so a PR build can be tried under any of them.
@@ -125,14 +126,56 @@ jobs:
           ' <<<"$run" >/dev/null ||
             { echo "::error::Build run $run_id is not a green build of PR #$PR_NUMBER at ${head:0:7}"; exit 1; }
 
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "run_id=$run_id"
+            echo "head_sha=$head"
+            echo "base_sha=$base"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Find the trusted PR APK artifact
+        if: steps.gate.outputs.run_id != ''
+        id: source-artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ steps.gate.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          artifact_id=$(
+            set -o pipefail
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/artifacts?per_page=100" |
+              jq -r '[.[].artifacts[] | select(.expired | not) |
+                select(.name == "droiddeck-apk" or (.name | test("^DroidDeck-[0-9A-Za-z.+-]+\\.apk$"))) | .id] |
+                if length == 1 then .[0] else error("Expected one APK artifact") end'
+          )
+          echo "id=$artifact_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download the trusted PR APK file
+        if: steps.gate.outputs.run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.gate.outputs.run_id }}
+          artifact-ids: ${{ steps.source-artifact.outputs.id }}
+          path: ${{ runner.temp }}/pr
+
+      - name: Check the downloaded APK and recheck the PR
+        id: inspect
+        if: steps.gate.outputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          HEAD: ${{ steps.gate.outputs.head_sha }}
+          BASE: ${{ steps.gate.outputs.base_sha }}
+        run: |
+          set -euo pipefail
           sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
           tools=$(find "$sdk/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
           # A PR build is made from the PR merged onto main, so it must install over main's own
           # build. main is what this job checked out; no release has to exist or be marked latest.
           main_code=$(sed -n 's/^[[:space:]]*versionCode[[:space:]][[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' app/build.gradle)
           [[ "$main_code" =~ ^[0-9]+$ ]] || { echo "::error::No numeric versionCode in main's app/build.gradle"; exit 1; }
-          mkdir -p "$RUNNER_TEMP/pr"
-          gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n droiddeck-apk -D "$RUNNER_TEMP/pr"
           mapfile -t apks < <(find "$RUNNER_TEMP/pr" -type f -name '*.apk')
           [[ ${#apks[@]} == 1 ]] || { echo '::error::Expected one PR APK'; exit 1; }
           package_line() {
@@ -144,18 +187,14 @@ jobs:
           }
 
           current=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")
-          jq -e --arg head "$head" --arg base "$base" '
+          jq -e --arg head "$HEAD" --arg base "$BASE" '
             .state == "open" and .draft == false and .base.ref == "main" and
             .head.sha == $head and .base.sha == $base
           ' <<<"$current" >/dev/null ||
             { echo "::error::PR #$PR_NUMBER moved on while its build was checked; publish again"; exit 1; }
           {
-            echo "pr_number=$PR_NUMBER"
-            echo "run_id=$run_id"
-            echo "head_sha=$head"
-            echo "base_sha=$base"
             echo "version_code=${candidate##* }"
-            echo "label=PR.$PR_NUMBER-${head:0:7}"
+            echo "label=PR.$PR_NUMBER-${HEAD:0:7}"
           } >> "$GITHUB_OUTPUT"
 
   sign:
@@ -168,7 +207,7 @@ jobs:
       label: ${{ needs.authorize.outputs.label }}
       artifact: droiddeck-pr-signed
     secrets: inherit
-    if: ${{ needs.authorize.outputs.skip != 'true' }}
+    if: github.repository == 'Droid-Deck/DroidDeck' && (needs.authorize.outputs.skip != 'true')
 
   publish:
     needs: [authorize, sign]
@@ -179,11 +218,11 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: droiddeck-pr-signed-*
           merge-multiple: true
@@ -209,7 +248,8 @@ jobs:
           } > notes-head.md
           cat notes-head.md
       # A token of the org's "DroidDeck CI Publisher" app, as build.yml's announce job uses.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
+        if: github.repository == 'Droid-Deck/DroidDeck'
         id: ci-token
         with:
           app-id: ${{ vars.DROIDDECK_CI_APP_ID }}
@@ -217,6 +257,7 @@ jobs:
           owner: Droid-Deck
           repositories: DroidDeck-CI
       - name: Publish to DroidDeck-CI
+        if: github.repository == 'Droid-Deck/DroidDeck'
         id: publish
         env:
           GH_TOKEN: ${{ steps.ci-token.outputs.token }}
@@ -283,6 +324,7 @@ jobs:
           gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/publish-test"
 
       - name: Report the signed build on the PR
+        if: github.repository == 'Droid-Deck/DroidDeck'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.authorize.outputs.pr_number }}
@@ -324,7 +366,7 @@ jobs:
           fi
 
       - name: Update the Discord PR announcement
-        if: ${{ always() && steps.publish.outcome == 'success' }}
+        if: github.repository == 'Droid-Deck/DroidDeck' && (always() && steps.publish.outcome == 'success')
         env:
           WEBHOOK: ${{ secrets.DISCORD_PR_BUILDS_WEBHOOK }}
           GH_TOKEN: ${{ github.token }}
@@ -336,6 +378,6 @@ jobs:
 
   catalog:
     needs: publish
-    if: ${{ always() && needs.publish.result != 'skipped' }}
+    if: github.repository == 'Droid-Deck/DroidDeck' && (always() && needs.publish.result != 'skipped')
     uses: ./.github/workflows/update-catalog.yml
     secrets: inherit

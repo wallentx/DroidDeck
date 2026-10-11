@@ -24,6 +24,7 @@ class OnScreenControls(
     private val pad: PadBridge?,
     private val editing: Boolean = false,
     private val onKeyboard: (() -> Unit)? = null,
+    onGuestTouch: ((MotionEvent) -> Boolean)? = null,
 ) : View(context) {
 
     private class Control(
@@ -86,6 +87,8 @@ class OnScreenControls(
         Control("start", "start", -1, 20f, 0f, 0f),
         Control("guide", "guide", -1, 22f, 0f, 0f),
         Control("qam", "qam", -1, 22f, 0f, 0f),
+        Control("l3", "l3", -1, 22f, 0f, 0f),
+        Control("r3", "r3", -1, 22f, 0f, 0f),
     )
 
     private val groups = controls.map { it.group }.distinct()
@@ -94,6 +97,7 @@ class OnScreenControls(
     private var quickHidden = false
     private var quickPressedBy = -1
     private var keyboardPressedBy = -1
+    private val buttonPointers = mutableSetOf<Int>()
     private var settings = ControllerPrefs.read(context)
     private var safe = Rect()
     private var selected: String? = null
@@ -117,6 +121,10 @@ class OnScreenControls(
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
         typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+
+    private val touchRouter = onGuestTouch?.let { guest ->
+        OnScreenTouchRouter(::claimsTouch, ::onControlsTouch, guest)
     }
 
     init {
@@ -199,6 +207,7 @@ class OnScreenControls(
     private fun relayout() {
         if (width <= 0 || height <= 0) return
         fit = if (buttonsOnly && !editing) 1f else fitScale()
+        val saved = if (ignoreSaved) emptyMap() else ControllerPrefs.layout(context, width, height)
         for (control in controls) control.radius = if (buttonsOnly && !editing && (control.id == "guide" || control.id == "qam")) dp(30f) else scaled(control.radiusDp)
         if (buttonsOnly && !editing) {
             val inset = dp(44f)
@@ -206,12 +215,59 @@ class OnScreenControls(
             put("qam", width - safe.right - inset, height - safe.bottom - inset)
         } else {
             placeAuto(width.toFloat(), height.toFloat())
-            if (!ignoreSaved) for ((group, pos) in ControllerPrefs.layout(context, width, height)) {
+            for ((group, pos) in saved) {
                 if (group in groups) put(group, pos.first * width, pos.second * height)
             }
         }
         groups.forEach { clamp(it) }
+        if (!buttonsOnly || editing) placeMissingStickClickButtons(saved.keys)
         invalidate()
+    }
+
+    /** Add new click buttons around an existing layout without moving any saved controls. */
+    private fun placeMissingStickClickButtons(savedGroups: Set<String>) {
+        val missing = stickClickButtonIds.filterNot { it in savedGroups }
+        val occupied = controls.filter {
+            it.id !in missing && (isVisible(it) || it.id in stickClickButtonIds)
+        }.toMutableList()
+        for (id in missing) {
+            val button = controls.first { it.id == id }
+            val anchor = controls.first { it.id == if (id == "l3") "guide" else "qam" }
+            val reach = button.radius * 1.25f + dp(4f)
+            val minX = safe.left + reach
+            val maxX = width - safe.right - reach
+            val minY = safe.top + reach
+            val maxY = height - safe.bottom - reach
+            if (maxX < minX || maxY < minY) continue
+            val direction = if (anchor.cy > height / 2f) -1f else 1f
+            val preferredX = anchor.cx.coerceIn(minX, maxX)
+            val preferredY = (anchor.cy + direction * (anchor.radius * 1.25f + reach)).coerceIn(minY, maxY)
+            // Test each actual hit target, including rectangular shoulders, rather than the
+            // much larger circles enclosing the entire face-button or d-pad group.
+            fun free(x: Float, y: Float) = occupied.none { it.contains(x, y, it.radius, reach) }
+            var chosenX = preferredX
+            var chosenY = preferredY
+            if (!free(chosenX, chosenY)) {
+                var nearest = Float.POSITIVE_INFINITY
+                val step = max(dp(8f), button.radius / 2f)
+                var y = minY
+                while (y <= maxY) {
+                    var x = minX
+                    while (x <= maxX) {
+                        val distance = (x - preferredX) * (x - preferredX) + (y - preferredY) * (y - preferredY)
+                        if (distance < nearest && free(x, y)) {
+                            chosenX = x
+                            chosenY = y
+                            nearest = distance
+                        }
+                        x += step
+                    }
+                    y += step
+                }
+            }
+            put(id, chosenX, chosenY)
+            occupied.add(button)
+        }
     }
 
     private fun pxPerMm(dpi: Float): Float {
@@ -297,7 +353,7 @@ class OnScreenControls(
     private fun crowded(group: String, gap: Float, space: Float = gap / 2f, except: String? = null): Boolean {
         val (x, y) = centre(group)
         return groups.any { other ->
-            if (other == group || other == except) return@any false
+            if (other == group || other == except || other in stickClickButtonIds) return@any false
             val (ox, oy) = centre(other)
             val dx = x - ox
             val dy = y - oy
@@ -490,6 +546,14 @@ class OnScreenControls(
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (editing) return onEditTouch(event)
+        return touchRouter?.onTouch(event) ?: onControlsTouch(event)
+    }
+
+    private fun claimsTouch(x: Float, y: Float): Boolean =
+        keyboardContains(x, y) || (!buttonsOnly && quickContains(x, y)) ||
+            (!quickHidden && (controlAt(x, y) != null || adaptiveStickAt(x, y, availableOnly = false) != null))
+
+    private fun onControlsTouch(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 val index = event.actionIndex
@@ -510,6 +574,7 @@ class OnScreenControls(
                 val control = controlAt(x, y) ?: adaptiveStickAt(x, y) ?: return false
                 if (control.pressedBy != -1) return true
                 control.pressedBy = event.getPointerId(index)
+                if (control.stick < 0) buttonPointers.add(control.pressedBy)
                 if (control.stick >= 0) {
                     control.clicked = settings.stickClick && control.lastUp > 0L && event.eventTime - control.lastUp < DOUBLE_TAP_MS
                     val adaptive = settings.adaptiveSticks
@@ -531,6 +596,7 @@ class OnScreenControls(
                     val y = event.getY(index)
                     val stick = controls.firstOrNull { it.stick >= 0 && it.pressedBy == pointer }
                     if (stick != null) { stick.drag(x, y); changed = true; continue }
+                    if (pointer !in buttonPointers) continue
                     val over = controlAt(x, y)?.takeIf { it.stick < 0 }
                     for (control in controls) {
                         if (control.stick < 0 && control.pressedBy == pointer && control !== over) {
@@ -548,6 +614,7 @@ class OnScreenControls(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
                 val pointer = event.getPointerId(event.actionIndex)
+                buttonPointers.remove(pointer)
                 if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
                     releaseAll()
                     return true
@@ -611,7 +678,7 @@ class OnScreenControls(
             !quickHidden && isVisible(it) && (editing || !settings.adaptiveSticks || it.stick < 0) && it.contains(x, y, it.radius)
         }
 
-    private fun adaptiveStickAt(x: Float, y: Float): Control? {
+    private fun adaptiveStickAt(x: Float, y: Float, availableOnly: Boolean = true): Control? {
         if (!settings.adaptiveSticks || editing || buttonsOnly || quickHidden) return null
         if (x < safe.left || x >= width - safe.right || y < safe.top || y >= height - safe.bottom) return null
         if (controls.any { it.stick < 0 && isVisible(it) && it.contains(x, y, it.radius, 5f) }) return null
@@ -619,7 +686,7 @@ class OnScreenControls(
             val dx = x - it.cx
             val dy = y - it.cy
             val reach = it.radius * 1.4f * sqrt(1.5f)
-            it.stick >= 0 && isVisible(it) && it.pressedBy == -1 && dx * dx + dy * dy <= reach * reach
+            it.stick >= 0 && isVisible(it) && (!availableOnly || it.pressedBy == -1) && dx * dx + dy * dy <= reach * reach
         }.minByOrNull {
             val dx = x - it.cx
             val dy = y - it.cy
@@ -628,6 +695,7 @@ class OnScreenControls(
     }
 
     private fun isVisible(control: Control): Boolean = when {
+        control.id in stickClickButtonIds && settings.stickClick -> false
         !editing && control.id == "guide" && !settings.steamButton -> false
         !editing && control.id == "qam" && !settings.qamButton -> false
         buttonsOnly && !editing -> control.id == "guide" || control.id == "qam"
@@ -657,6 +725,7 @@ class OnScreenControls(
                             control.dirty = false
                         }
                         control.id == "qam" || control.target == ControllerPrefs.OFF -> {}
+                        control.id in stickClickButtonIds && settings.stickClick -> {}
                         else -> {
                             used.add(control.target)
                             if (control.pressedBy != -1) held.add(control.target)
@@ -692,6 +761,8 @@ class OnScreenControls(
     }
 
     fun releaseAll() {
+        touchRouter?.cancel()
+        buttonPointers.clear()
         quickPressedBy = -1
         keyboardPressedBy = -1
         invalidate()
@@ -716,6 +787,7 @@ class OnScreenControls(
         const val SHOULDER_WIDTH = 1.45f
         const val SHOULDER_HEIGHT = 0.8f
         val shoulderIds = setOf("lb", "rb", "lt", "rt")
+        val stickClickButtonIds = setOf("l3", "r3")
         val directions = listOf("up", "right", "down", "left")
     }
 }

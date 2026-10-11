@@ -24,6 +24,61 @@ package com.droiddeck.launcher.core
  * account name rather than an email.
  */
 object LogRedactor {
+    /**
+     * No diagnostic line is useful enough to justify giving the regex engine an unbounded input.
+     * A line over this limit is consumed whole and replaced, never split into independently
+     * scrubbed chunks: a secret crossing a chunk boundary must not reach the output.
+     */
+    internal const val MAX_LINE_LENGTH = 64 * 1024
+    internal const val OVERSIZED_LINE = "<oversized log line withheld>"
+
+    /**
+     * Android's regex matchers own native state. Reusing one matcher per rule and worker thread
+     * avoids building up a large native-allocation backlog while old log trees are scrubbed. The
+     * empty reset in [withMatcher] also makes sure a matcher never retains the last line.
+     */
+    private data class MatcherKey(val pattern: String, val options: Set<RegexOption>)
+
+    private class MatcherCache : LinkedHashMap<MatcherKey, java.util.regex.Matcher>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<MatcherKey, java.util.regex.Matcher>?): Boolean =
+            size > 32
+    }
+
+    private val matchers = object : ThreadLocal<MatcherCache>() {
+        override fun initialValue(): MatcherCache = MatcherCache()
+    }
+
+    private fun <T> withMatcher(
+        regex: Regex,
+        input: CharSequence,
+        action: (java.util.regex.Matcher) -> T,
+    ): T {
+        val key = MatcherKey(regex.pattern, regex.options)
+        val matcher = matchers.get()!!.getOrPut(key) { regex.toPattern().matcher("") }
+        return try {
+            action(matcher.reset(input))
+        } finally {
+            matcher.reset("")
+        }
+    }
+
+    private fun replaceMatches(input: String, regex: Regex, replacement: String): String =
+        replaceMatches(input, regex) { replacement }
+
+    private fun replaceMatches(
+        input: String,
+        regex: Regex,
+        replacement: (java.util.regex.Matcher) -> String,
+    ): String = withMatcher(regex, input) { matcher ->
+        if (!matcher.find()) return@withMatcher input
+        val out = StringBuffer(input.length)
+        do {
+            matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(replacement(matcher)))
+        } while (matcher.find())
+        matcher.appendTail(out)
+        out.toString()
+    }
+
     private val EMAIL = Regex("[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}")
     /** "Using JWT 25484942796017334" - the client logs its session token as digits, not base64. */
     private val JWT_LABELLED = Regex("(?i)(\\bJWT[\\s=:]+)(\\d{8,})")
@@ -93,9 +148,9 @@ object LogRedactor {
         "(?i)(?<![A-Za-z0-9_])(login)(\\s*=\\s*|[\"']\\s*[=:]\\s*|[\"']\\s+)" + ACCOUNT_VALUE
     )
 
-    /** The device's Steam accounts and persona names as patterns (see [learnAccounts]). */
+    /** The device's Steam accounts and persona names as one combined pattern (see [learnAccounts]). */
     @Volatile
-    private var accounts: List<Regex> = emptyList()
+    private var accounts: Regex? = null
 
     /**
      * Learns every Steam account on the device from the client's loginusers.vdf - its AccountName
@@ -103,29 +158,32 @@ object LogRedactor {
      * Names under three characters are skipped: blanking every "a" would ruin a log.
      */
     fun learnAccounts(loginUsers: java.io.File) {
-        val found = ArrayList<Regex>()
+        val found = ArrayList<String>()
         try {
             if (loginUsers.isFile) {
                 val kv = Regex("\"(AccountName|PersonaName)\"\\s+\"([^\"]*)\"")
                 kv.findAll(loginUsers.readText()).map { it.groupValues[2].trim() }.filter { it.length >= 3 }.distinct().forEach { name ->
-                    found += Regex("(?i)(?<![A-Za-z0-9_])" + Regex.escape(name) + "(?![A-Za-z0-9_])")
+                    found += "(?i)(?<![A-Za-z0-9_])" + Regex.escape(name) + "(?![A-Za-z0-9_])"
                 }
             }
         } catch (e: Exception) {
             return
         }
-        accounts = found
+        accounts = found.takeIf { it.isNotEmpty() }?.let { parts -> Regex(parts.joinToString("|") { "(?:$it)" }) }
     }
 
     /** Everything the session's runtime can tell about whose logs these are: addresses and accounts. */
     fun learnFromRuntime(root: java.io.File) {
         learnOwnAddresses(java.io.File(root, "etc/droiddeck-net"))
         learnAccounts(java.io.File(root, "root/.local/share/Steam/config/loginusers.vdf"))
+        // This is also the thread that normally performs the following scrub. Drop rules learned
+        // for a previous runtime without leaving their native matchers cached.
+        matchers.remove()
     }
 
-    /** This device's public addresses as patterns (see [learnOwnAddresses]); empty until learned. */
+    /** This device's public addresses as one combined pattern (see [learnOwnAddresses]); null until learned. */
     @Volatile
-    private var own: List<Regex> = emptyList()
+    private var own: Regex? = null
 
     /**
      * Learns the device's addresses from the link file the app writes for the session
@@ -133,7 +191,7 @@ object LogRedactor {
      * private, link-local and loopback addresses identify nobody and are left out.
      */
     fun learnOwnAddresses(linkFile: java.io.File) {
-        val found = ArrayList<Regex>()
+        val found = ArrayList<String>()
         try {
             if (linkFile.isFile) linkFile.forEachLine { line ->
                 val addr = line.trim().takeIf { it.startsWith("addr ") }?.split(Regex("\\s+"))?.getOrNull(1) ?: return@forEachLine
@@ -142,15 +200,15 @@ object LogRedactor {
                         val groups = expand6(addr)?.take(4) ?: return@forEachLine
                         // Any spelling of an address in this /64: leading zeros dropped, :: anywhere after.
                         val prefix = groups.joinToString(":") { g -> "0{0,3}" + Regex.escape(g.trimStart('0').ifEmpty { "0" }) }
-                        found += Regex("(?i)(?<![0-9A-Fa-f:])$prefix(?::[0-9A-Fa-f]{0,4}){1,4}(?:%[A-Za-z0-9_.]+)?")
+                        found += "(?i)(?<![0-9A-Fa-f:])$prefix(?::[0-9A-Fa-f]{0,4}){1,4}(?:%[A-Za-z0-9_.]+)?"
                     }
-                    "public IPv4" -> found += Regex("(?<![0-9.])" + Regex.escape(addr) + "(?![0-9.])")
+                    "public IPv4" -> found += "(?<![0-9.])" + Regex.escape(addr) + "(?![0-9.])"
                 }
             }
         } catch (e: Exception) {
             return
         }
-        own = found
+        own = found.takeIf { it.isNotEmpty() }?.let { parts -> Regex(parts.joinToString("|") { "(?:$it)" }) }
     }
 
     /** "public IPv6", "private IPv4", "link-local IPv6", ... for an address literal; null if it is not one. */
@@ -231,9 +289,9 @@ object LogRedactor {
         "(?<![\\d.])(?:10\\.\\d{1,3}|192\\.168|172\\.(?:1[6-9]|2\\d|3[01])|169\\.254)\\.\\d{1,3}\\.\\d{1,3}(?!\\.?\\d)"
     )
 
-    /** [src]'s lines, scrubbed, to [out]. */
+    /** [src]'s bounded lines, scrubbed, to [out]. */
     fun scrubTo(src: java.io.File, out: java.io.Writer) {
-        src.forEachLine { line -> out.write(redact(line)); out.write("\n") }
+        scrubLines(src, out, ::redact)
     }
 
     /**
@@ -244,17 +302,73 @@ object LogRedactor {
      */
     fun redactForShare(line: String): String {
         if (line.isEmpty()) return line
+        if (line.length > MAX_LINE_LENGTH) return OVERSIZED_LINE
         return try {
             val out = SecretScrub.scrub(redact(line), SecretScrub.Urls.KEEP_PATH, "<redacted:token>")
-            LAN_IPV4.replace(out, "<lan-address>")
+            replaceMatches(out, LAN_IPV4, "<lan-address>")
         } catch (t: Throwable) {
             "<redaction failed; line withheld>"
         }
     }
 
-    /** [src]'s lines through [redactForShare], to [out]: the pass every text file in a shared zip gets. */
+    /** [src]'s bounded lines through [redactForShare], to [out]: the pass every text file in a shared zip gets. */
     fun scrubForShare(src: java.io.File, out: java.io.Writer) {
-        src.forEachLine { line -> out.write(redactForShare(line)); out.write("\n") }
+        scrubLines(src, out, ::redactForShare)
+    }
+
+    /**
+     * Reads without ever materializing more than [MAX_LINE_LENGTH] characters of one logical line.
+     * Oversized lines are still consumed through their newline before a single placeholder is
+     * emitted, so no fragment of their original contents can escape.
+     */
+    private fun scrubLines(src: java.io.File, out: java.io.Writer, scrub: (String) -> String) {
+        src.bufferedReader().use { input ->
+            val chunk = CharArray(8192)
+            val line = StringBuilder(4096)
+            var oversized = false
+            var pendingContent = false
+            var pendingCarriageReturn = false
+
+            fun emit() {
+                if (oversized) {
+                    out.write(OVERSIZED_LINE)
+                } else {
+                    out.write(scrub(line.toString()))
+                }
+                out.write("\n")
+                line.setLength(0)
+                oversized = false
+                pendingContent = false
+            }
+
+            while (true) {
+                val count = input.read(chunk)
+                if (count < 0) break
+                for (i in 0 until count) {
+                    val char = chunk[i]
+                    if (pendingCarriageReturn) {
+                        emit()
+                        pendingCarriageReturn = false
+                        if (char == '\n') continue
+                    }
+                    when (char) {
+                        '\r' -> pendingCarriageReturn = true
+                        '\n' -> emit()
+                        else -> {
+                            pendingContent = true
+                            if (!oversized) {
+                                if (line.length < MAX_LINE_LENGTH) line.append(char)
+                                else {
+                                    line.setLength(0)
+                                    oversized = true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (pendingCarriageReturn || pendingContent) emit()
+        }
     }
 
     /** `<redacted:account>`, inside [value]'s quotes when it had them. */
@@ -266,37 +380,38 @@ object LogRedactor {
     /** [line] with every credential shape replaced. Null- and exception-safe by construction. */
     fun redact(line: String): String {
         if (line.isEmpty()) return line
+        if (line.length > MAX_LINE_LENGTH) return OVERSIZED_LINE
         return try {
             var out = line
-            out = MAC_FIELD.replace(out) { "${it.groupValues[1]}<redacted:mac>" }
-            out = MAC.replace(out, "<redacted:mac>")
-            out = DEVICE_IDENTIFIER.replace(out) {
-                val value = it.groupValues[2]
+            out = replaceMatches(out, MAC_FIELD) { "${it.group(1)}<redacted:mac>" }
+            out = replaceMatches(out, MAC, "<redacted:mac>")
+            out = replaceMatches(out, DEVICE_IDENTIFIER) {
+                val value = it.group(2)
                 val quote = value.first().takeIf { char -> char == '\"' || char == '\'' }?.toString().orEmpty()
-                "${it.groupValues[1]}${quote}<redacted:serial>${quote}"
+                "${it.group(1)}${quote}<redacted:serial>${quote}"
             }
-            out = GUID.replace(out, "<redacted:guid>")
-            out = JWT_LABELLED.replace(out) { "${it.groupValues[1]}<redacted:jwt>" }
-            out = JWT_BASE64.replace(out, "<redacted:jwt>")
-            out = SECRET_KV.replace(out) { "${it.groupValues[1]}${it.groupValues[2]}<redacted:token>" }
-            out = GUARD_CODE.replace(out) { "${it.groupValues[1]}<redacted:code>" }
-            out = WEBAPI_KEY.replace(out, "<redacted:key>")
+            out = replaceMatches(out, GUID, "<redacted:guid>")
+            out = replaceMatches(out, JWT_LABELLED) { "${it.group(1)}<redacted:jwt>" }
+            out = replaceMatches(out, JWT_BASE64, "<redacted:jwt>")
+            out = replaceMatches(out, SECRET_KV) { "${it.group(1)}${it.group(2)}<redacted:token>" }
+            out = replaceMatches(out, GUARD_CODE) { "${it.group(1)}<redacted:code>" }
+            out = replaceMatches(out, WEBAPI_KEY, "<redacted:key>")
             // Mask, not delete: the last four digits let a reader correlate lines to one account.
-            out = STEAMID64.replace(out) { "${it.groupValues[1]}********${it.groupValues[3]}" }
-            out = STEAMID3.replace(out) { m ->
-                val id = m.groupValues[1]
+            out = replaceMatches(out, STEAMID64) { "${it.group(1)}********${it.group(3)}" }
+            out = replaceMatches(out, STEAMID3) { m ->
+                val id = m.group(1)
                 "[U:1:${if (id.length > 4) "*".repeat(id.length - 4) + id.takeLast(4) else id}]"
             }
-            out = EXTERNAL_ADDR.replace(out) { "${it.groupValues[1]}<redacted:ip>" }
-            for (r in own) out = r.replace(out, "<redacted:ip>")
-            out = LOGIN_STATE.replace(out) { "${it.groupValues[1]}<redacted:account>" }
-            out = LOGIN_USERS.replace(out) { "${it.groupValues[1]}<redacted:account>" }
-            out = ACCOUNT_KV.replace(out) { "${it.groupValues[1]}${it.groupValues[2]}${quoted(it.groupValues[3])}" }
-            out = LOGIN_KV.replace(out) { "${it.groupValues[1]}${it.groupValues[2]}${quoted(it.groupValues[3])}" }
-            for (r in accounts) out = r.replace(out, "<redacted:account>")
-            out = EMAIL.replace(out, "<redacted:email>")
-            out = RESIDUAL.replace(out) { "${it.groupValues[1]}=<redacted:token>" }
-            out = LONG_TOKEN.replace(out, "<redacted:token>")
+            out = replaceMatches(out, EXTERNAL_ADDR) { "${it.group(1)}<redacted:ip>" }
+            own?.let { out = replaceMatches(out, it, "<redacted:ip>") }
+            out = replaceMatches(out, LOGIN_STATE) { "${it.group(1)}<redacted:account>" }
+            out = replaceMatches(out, LOGIN_USERS) { "${it.group(1)}<redacted:account>" }
+            out = replaceMatches(out, ACCOUNT_KV) { "${it.group(1)}${it.group(2)}${quoted(it.group(3))}" }
+            out = replaceMatches(out, LOGIN_KV) { "${it.group(1)}${it.group(2)}${quoted(it.group(3))}" }
+            accounts?.let { out = replaceMatches(out, it, "<redacted:account>") }
+            out = replaceMatches(out, EMAIL, "<redacted:email>")
+            out = replaceMatches(out, RESIDUAL) { "${it.group(1)}=<redacted:token>" }
+            out = replaceMatches(out, LONG_TOKEN, "<redacted:token>")
             out
         } catch (t: Throwable) {
             // A log line is never worth crashing a session over, but an unscrubbed one must not

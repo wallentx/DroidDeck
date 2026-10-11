@@ -6,6 +6,14 @@ ships (3.16.29, Arch Linux ARM's package, same build options), and staged from t
 The binary's shared-library needs are checked against `runtime-sonames.txt`, the runtime's own
 library list, before anything is published.
 
+The pinned `gamescope-3.16.29-p12-powervr` archive matches this source patch stack through patch
+0125. It includes patch 0114 and the PowerVR fixes below, with patch 0113 removed.
+It was built from `7ae3bd972e9f911afeb13b7e69a8dac3ecd3f3ba` in
+[CI run 38034329682](https://github.com/wallentx/DroidDeck/actions/runs/38034329682),
+which passed full compilation, the presentation policy tests and the runtime dependency check.
+The published archive's SHA-256 was checked against the CI artifact. Device validation of the
+frame-handoff correction remains separate.
+
 - `0002-steamcompmgr-fallback-appid-focus.patch` - Armada (armada-os/armada), verbatim.
 - `0009-fix-arm64-steam-night-mode.patch` - Armada, verbatim: the ARM64 client packs the
   night-mode property differently; the slider did nothing.
@@ -45,5 +53,61 @@ library list, before anything is published.
   `GAMESCOPE_FOCUSABLE_WINDOWS`, so the client kept its loading screen over the running game
   (Skyrim SE, A Plague Tale: Innocence, on the games' own Xwayland). MapNotify now refreshes the flag.
 
+- `0120-nested-swapchain-capability-fallback.patch` - this app: nested Vulkan backends
+  negotiate presentation IDs/waits and mutable swapchain support. Surfaces lacking mutable
+  formats or storage usage receive copies from ordinary offscreen composition images, using
+  the same command-buffer barriers and presentation-layout transition as direct composition.
+  Swapchains respect advertised alpha modes, image counts and extents, and accept RGBA as well
+  as BGRA. Without presentation waits, FIFO acquisition anchors estimated frame scheduling;
+  it does not provide measured presentation timestamps. The build runs the capability-policy
+  tests in `tests/nested-swapchain.cpp`; actual presentation still needs device validation.
+
+`release.env` may set `GAMESCOPE_REPO` to fetch a component from a downstream repository
+while retaining the configured source for the other APK assets. The archive remains SHA-256 pinned.
+
+- `0121-powervr-single-pixel-rcas.patch` - this app: select the existing single-pixel
+  RCAS shader on Imagination GPUs as well as Qualcomm. On the tested PowerVR device,
+  the quad-swizzled shader fails pipeline creation for layers 3 through 8 with YCbCr
+  mask 2; the single-pixel shader passed all 24 tested layer/mask combinations using
+  the APK's exact SPIR-V and libhybris runtime. Both variants cover the same 16x16
+  dispatch tile. This is a compilation compatibility fix, not a performance claim.
+
 Sixteen more of Armada's patches are DRM/lease/HDR-on-KMS work for a native display, which this
 app's Wayland-hosted gamescope never reaches, or need a newer gamescope than the runtime has.
+
+`0122-powervr-linear-dmabuf-import.patch` preserves explicit linear DMA-BUF layouts
+when PowerVR rejects the mutable-format capability query. The retry is limited to
+single-plane RGBA8/BGRA8, checks base-format import support, and retains the original
+image flags and plane layout. Other rejected PowerVR layouts fail rather than being
+silently interpreted as optimal tiling. Imported memory types are selected from the
+intersection of the image and FD masks; CPU-mapping requirements remain strict.
+The device probe reproduced the old 8 MiB requirement against a 4,616,192-byte
+linear buffer, then verified UNORM and sRGB GPU sampling with the preserved layout.
+The build tests the retry guard and memory-type selection. Steam still needs an
+end-to-end device test after installing the new bundle.
+
+`0123-powervr-rgba-copy-surface.patch` requires an RGBA SDR surface for PowerVR's
+copy-based nested presentation. Gamescope's SDR shaders declare `rgba8`; a BGRA
+storage view reverses red and blue on the stock driver, and copying that image to
+a BGRA swapchain preserves the error. A native store-then-sample probe reproduced
+128/64/192 becoming 192/64/128 with BGRA, while RGBA retained 128/64/192. A live
+X11 checkerboard reproduced the same channel reversal. Other vendors, direct
+composition and HDR retain their existing format selection. This fixes channel
+order; it does not address Steam's separate corrupted DRI3 window contents.
+
+`0124-sdl-preserve-explicit-refresh.patch` keeps an explicit nested refresh (`-r`) when SDL reports
+the desktop mode again after its window is shown, moved or resized. Without it, a 60 Hz DroidDeck
+cap was replaced by the panel's 120 Hz desktop mode for Steam's Xwayland display while Gamescope's
+frame scheduler remained at 60 Hz. With no configured rate, SDL desktop-rate discovery is unchanged.
+The mode-update log records configured, desktop and effective rates only when that tuple changes.
+The correction is included from p11 onward. Device logs confirmed the requested 60 Hz mode,
+but the captured old-frame replay persisted and prompted the subsequent handoff corrections.
+
+`0125-sdl-wait-before-present.patch` completes the existing SDL compositor wait before
+`vkQueuePresentKHR`. Gamescope otherwise submits its composition and copy, presents with no
+render-finished semaphore, and waits afterward; the Android Vulkan bridge can therefore hand the
+native consumer an already-signaled fence while the swapchain image still contains an older frame.
+The patch moves the existing wait rather than adding another one. It serializes composition and
+presentation, giving up their previous overlap; a future pipelined implementation requires a binary
+render-finished semaphore per swapchain image. The pinned p12 archive includes this correction;
+its effect on the captured replay still needs a repeat device recording.

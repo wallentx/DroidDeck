@@ -53,6 +53,7 @@
 #include "droiddeck_ext.h"
 #include "droiddeck_color.h"
 #include "compositor_internal.h"
+#include "frame_cadence.h"
 
 #define WLOGI(...) __android_log_print(ANDROID_LOG_INFO, "DroidDeckWayland", __VA_ARGS__)
 #define WLOGE(...) __android_log_print(ANDROID_LOG_ERROR, "DroidDeckWayland", __VA_ARGS__)
@@ -290,8 +291,9 @@ static struct wl_event_source *g_render_idle, *g_frame_timer;
  * clients get their buffers back as soon as they're replaced. Without ticks (an older app, no
  * window) a fallback timer renders instead. */
 static int g_dirty;                         /* something changed since the last render */
-static int64_t g_last_vsync_ns;             /* last tick, 0 = none yet */
-static int64_t g_refresh_ns = 16666667;     /* measured tick interval (pacing only, never reported) */
+static int64_t g_last_vsync_ns;             /* last tick receipt, 0 = none yet (liveness only) */
+static int64_t g_refresh_ns = DD_FRAME_CADENCE_DEFAULT_NS; /* frame-timeline period (pacing only) */
+static struct dd_frame_cadence g_vsync_cadence = DD_FRAME_CADENCE_INITIALIZER;
 static struct wl_event_source *g_fallback_timer;
 static int g_fallback_armed;
 
@@ -2278,12 +2280,12 @@ static int scene_waits_for_game(int64_t now) {
 static void on_vsync(int64_t frame_time_ns) {
     int64_t now = now_ns();
     g_perf.ticks++;
-    if (g_last_vsync_ns) {
-        int64_t d = now - g_last_vsync_ns;
-        if (d > 3000000LL && d < 40000000LL) g_refresh_ns = (g_refresh_ns * 7 + d) / 8;
-    }
+    if (dd_frame_cadence_observe(&g_vsync_cadence, frame_time_ns, now) !=
+        DD_FRAME_CADENCE_REJECTED)
+        g_refresh_ns = g_vsync_cadence.refresh_ns;
+    /* Receipt time answers only whether ticks are still reaching this event loop. It may include
+     * arbitrary pipe and compositor scheduling delay, so it must not influence refresh cadence. */
     g_last_vsync_ns = now;
-    (void)frame_time_ns;
     /* The app's surface may have been replaced or taken away since the last frame: apply that now
      * (the app never waits for us), and redraw the scene onto a new one. */
     if (vkp_apply_window_request()) g_dirty = 1;
@@ -3534,6 +3536,7 @@ int droiddeck_wayland_run(void) {
     wl_global_create(display, &wl_output_interface, 4, NULL, bind_output);
     wl_global_create(display, &xdg_wm_base_interface, 1, NULL, bind_xdg_wm_base);
     wl_global_create(display, &zwp_linux_dmabuf_v1_interface, 4, NULL, bind_dmabuf);
+    droiddeck_android_wlegl_init(display);
     /* gamescope's Wayland backend refuses a seat older than 8. */
     wl_global_create(display, &wl_seat_interface, 9, NULL, bind_seat);
     wl_global_create(display, &banner_desktop_v1_interface, 1, NULL, bind_desktop);

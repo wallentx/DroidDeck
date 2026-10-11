@@ -1,0 +1,206 @@
+diff --git a/src/emu/x86syscall.c b/src/emu/x86syscall.c
+--- a/src/emu/x86syscall.c
++++ b/src/emu/x86syscall.c
+@@ -27,6 +27,7 @@
+ #include <poll.h>
+ 
+ #include "debug.h"
++#include "droiddeck_loader_trace.h"
+ #include "box64stack.h"
+ #include "x64emu.h"
+ #include "x64emu_private.h"
+@@ -298,8 +299,13 @@
+ {
+     uint32_t s = R_EAX;
+     printf_log(LOG_DEBUG, "%p: Calling 32bits syscall 0x%02X (%d) %p %p %p %p %p", (void*)R_RIP, s, s, (void*)(uintptr_t)R_EBX, (void*)(uintptr_t)R_ECX, (void*)(uintptr_t)R_EDX, (void*)(uintptr_t)R_ESI, (void*)(uintptr_t)R_EDI); 
+-    if(my_syscall_user_dispatch(emu, R_RIP - 2, s, 1))
++    int dd_trace_call = s == 5 || s == 55 || s == 91 || s == 125 || s == 192 || s == 221 || s == 356;
++    if(dd_trace_call)
++        DD_LOADER_TRACE("abi=i386 event=enter nr=%u ip=%p a0=0x%x a1=0x%x a2=0x%x\n", s, (void*)R_RIP, R_EBX, R_ECX, R_EDX);
++    if(my_syscall_user_dispatch(emu, R_RIP - 2, s, 1)) {
++        if(dd_trace_call) DD_LOADER_TRACE("abi=i386 event=user-dispatch nr=%u\n", s);
+         return;
++    }
+     if(s == 172 && R_EBX == PR_SET_SYSCALL_USER_DISPATCH) {
+         S_EAX = my_syscall_user_dispatch_prctl(emu, R_ECX, R_EDX, R_ESI, R_EDI ? (void*)(uintptr_t)R_EDI : NULL);
+         printf_log(LOG_DEBUG, " => 0x%x\n", R_EAX);
+@@ -376,5 +382,7 @@
+             R_EAX = (uint32_t)-ENOSYS;
+             return;
+     }
++    if(dd_trace_call)
++        DD_LOADER_TRACE("abi=i386 event=return nr=%u result=%d\n", s, S_EAX);
+     printf_log(LOG_DEBUG, " => 0x%x\n", R_EAX);
+ }
+diff --git a/src/emu/x64syscall.c b/src/emu/x64syscall.c
+--- a/src/emu/x64syscall.c
++++ b/src/emu/x64syscall.c
+@@ -27,6 +27,7 @@
+ #include "x64_signals.h"
+ #include "os.h"
+ #include "debug.h"
++#include "droiddeck_loader_trace.h"
+ #include "box64stack.h"
+ #include "x64emu.h"
+ #include "box64cpu.h"
+@@ -565,8 +566,13 @@
+         if(!BOX64ENV(rolling_log))
+             printf_log(LOG_NONE, "%s", buff);
+     }
+-    if(my_syscall_user_dispatch(emu, R_RIP - 2, s, 0))
++    int dd_trace_call = s == 2 || s == 9 || s == 10 || s == 11 || s == 72 || s == 257 || s == 319;
++    if(dd_trace_call)
++        DD_LOADER_TRACE("abi=x64 event=enter nr=%u ip=%p a0=0x%llx a1=0x%llx a2=0x%llx\n", s, (void*)R_RIP, (unsigned long long)R_RDI, (unsigned long long)R_RSI, (unsigned long long)R_RDX);
++    if(my_syscall_user_dispatch(emu, R_RIP - 2, s, 0)) {
++        if(dd_trace_call) DD_LOADER_TRACE("abi=x64 event=user-dispatch nr=%u\n", s);
+         return;
++    }
+     if (s == 157 && R_EDI == PR_SET_SYSCALL_USER_DISPATCH) {
+         S_RAX = my_syscall_user_dispatch_prctl(emu, R_RSI, R_RDX, R_R10, (void*)R_R8);
+         return;
+@@ -604,6 +610,8 @@
+         }
+         if(S_EAX==-1 && errno>0)
+             S_RAX = -errno;
++        if(dd_trace_call)
++            DD_LOADER_TRACE("abi=x64 event=return nr=%u result=%lld\n", s, (long long)S_RAX);
+         if(log) snprintf(buffret, 127, "0x%x%s", R_EAX, buff2);
+         if(log && !BOX64ENV(rolling_log)) printf_log_prefix(0, LOG_NONE, "=> %s\n", buffret);
+         return;
+@@ -1086,6 +1094,8 @@
+             S_RAX = -ENOSYS;
+             break;
+     }
++    if(dd_trace_call)
++        DD_LOADER_TRACE("abi=x64 event=return nr=%u result=%lld\n", s, (long long)S_RAX);
+     if(log) {
+         if(BOX64ENV(rolling_log))
+             snprintf(buffret, 127, "0x%lx%s", R_RAX, buff2);
+@@ -1122,7 +1132,12 @@
+         switch(syscallwrap[s].nbpars) {
+             case 0: return syscall(sc);
+             case 1: return syscall(sc, R_RSI);
+-            case 2: return syscall(sc, R_RSI, R_RDX);
++            case 2: {
++                long result = syscall(sc, R_RSI, R_RDX);
++                if(s == 319)
++                    DD_LOADER_TRACE("api=libc-syscall nr=319 flags=0x%llx result=%ld errno=%d\n", (unsigned long long)R_RDX, result, result < 0 ? errno : 0);
++                return result;
++            }
+             case 3: return syscall(sc, R_RSI, R_RDX, R_RCX);
+             case 4: return syscall(sc, R_RSI, R_RDX, R_RCX, R_R8);
+             case 5: return syscall(sc, R_RSI, R_RDX, R_RCX, R_R8, R_R9);
+diff --git a/src/wrapped/wrappedlibdl.c b/src/wrapped/wrappedlibdl.c
+--- a/src/wrapped/wrappedlibdl.c
++++ b/src/wrapped/wrappedlibdl.c
+@@ -10,6 +10,7 @@
+ #include "wrappedlibs.h"
+ 
+ #include "debug.h"
++#include "droiddeck_loader_trace.h"
+ #include "wrapper.h"
+ #include "bridge.h"
+ #include "librarian/library_private.h"
+@@ -136,6 +137,7 @@
+     if(filename) {
+         char* rfilename = (char*)alloca(MAX_PATH);
+         strcpy(rfilename, (char*)filename);
++        DD_LOADER_TRACE("api=dlopen event=enter path=%.200s flags=0x%x\n", rfilename, flag);
+         if(box64_zoom && rfilename && strstr(rfilename, "/libturbojpeg.so")) {
+             void* sys = my_dlopen(emu, "libturbojpeg.so.0", flag);
+             if(sys)
+@@ -287,6 +289,7 @@
+ {
+     lockLibLoader();
+     void* ret = my_dlopen_internal(emu, filename, flag);
++    DD_LOADER_TRACE("api=dlopen event=return handle=%p\n", ret);
+     unlockLibLoader();
+     return ret;
+ }
+@@ -464,6 +467,7 @@
+ {
+     printf_dlsym(LOG_DEBUG, "%04d|Call to dlsym(%p, \"%s\")%s", GetTID(), handle, symbol, BOX64ENV(dlsym_error)?"":"\n");
+     void* ret = my_dlsym_internal(emu, handle, symbol, -1, NULL);
++    DD_LOADER_TRACE("api=dlsym handle=%p symbol=%.160s result=%p\n", handle, (char*)symbol, ret);
+     #if 0
+     char* symb = symbol;
+     static char* previous = NULL;
+diff --git a/src/wrapped/wrappedlibc.c b/src/wrapped/wrappedlibc.c
+--- a/src/wrapped/wrappedlibc.c
++++ b/src/wrapped/wrappedlibc.c
+@@ -77,6 +77,7 @@
+ #include "x64emu.h"
+ #include "box64cpu.h"
+ #include "debug.h"
++#include "droiddeck_loader_trace.h"
+ #include "wrapper.h"
+ #include "bridge.h"
+ #include "callback.h"
+@@ -2535,7 +2536,12 @@
+         return -1;
+     }
+     #endif
+-    return open_special_case(emu, pathname, flags, (uintptr_t)mode, OPEN_TYPE, NULL);
++    int result = open_special_case(emu, pathname, flags, (uintptr_t)mode, OPEN_TYPE, NULL);
++    int error = errno;
++    if((result >= 0 || error != EFAULT) && !strncmp(pathname, "/proc/", 6))
++        DD_LOADER_TRACE("api=open-proc path=%.160s flags=0x%x result=%d errno=%d\n", (char*)pathname, flags, result, result < 0 ? error : 0);
++    errno = error;
++    return result;
+ }
+ EXPORT int32_t my___open(x64emu_t* emu, void* pathname, int32_t flags, uint32_t mode) __attribute__((alias("my_open")));
+ 
+@@ -4395,6 +4401,16 @@
+     return ret;
+ }
+ 
++#ifdef __NR_memfd_create
++EXPORT int my_memfd_create(x64emu_t* emu, void* name, uint32_t flags)
++{
++    DD_LOADER_TRACE("api=libc-memfd event=enter native_nr=%d flags=0x%x\n", __NR_memfd_create, flags);
++    int result = syscall(__NR_memfd_create, name, flags);
++    DD_LOADER_TRACE("api=libc-memfd flags=0x%x result=%d errno=%d\n", flags, result, result < 0 ? errno : 0);
++    return result;
++}
++#endif
++
+ #if 0
+ #ifdef PANDORA
+ #define RENAME_NOREPLACE    (1 << 0)
+diff --git a/src/wrapped/wrappedlibc_private.h b/src/wrapped/wrappedlibc_private.h
+--- a/src/wrapped/wrappedlibc_private.h
++++ b/src/wrapped/wrappedlibc_private.h
+@@ -1324,7 +1324,7 @@
+ GO(__memcmpeq, iFppL)
+ GO(memcpy, pFppL)
+ GO(__memcpy_chk, pFppLL)
+-GO(memfd_create, iFpu)
++GOM(memfd_create, iFEpu)
+ GO(memfrob, pFpL)
+ GO(memmem, pFpLpL)
+ GO(memmove, pFppL)
+diff --git a/src/include/droiddeck_loader_trace.h b/src/include/droiddeck_loader_trace.h
+new file mode 100644
+--- /dev/null
++++ b/src/include/droiddeck_loader_trace.h
+@@ -0,0 +1,20 @@
++#ifndef DROIDDECK_LOADER_TRACE_H
++#define DROIDDECK_LOADER_TRACE_H
++#include <errno.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include "debug.h"
++static inline int dd_loader_trace_enabled(void)
++{
++    const char* value = getenv("DROIDDECK_BOX64_LOADER_TRACE");
++    return value && !strcmp(value, "1");
++}
++// Preserve the operation's errno and avoid logging environment or buffer contents.
++#define DD_LOADER_TRACE(format, ...) do { \
++    int dd_trace_errno = errno; \
++    if(dd_loader_trace_enabled()) \
++        printf_log(LOG_INFO, "[DD_LOADER pid=%d] " format, (int)getpid(), ##__VA_ARGS__); \
++    errno = dd_trace_errno; \
++} while(0)
++#endif

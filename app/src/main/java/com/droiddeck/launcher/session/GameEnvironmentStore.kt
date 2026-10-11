@@ -13,6 +13,7 @@ object GameEnvironmentStore {
     private const val GUEST_FILE = "root/.config/droiddeck/game-environment.json"
     /** The published file's extra DXVK options (droiddeck-game-env reads it; the app's own file has none). */
     const val DXVK_CONFIG = "dxvkConfig"
+    const val GRAPHICS_PROFILE = "graphicsProfile"
 
     @Synchronized
     fun read(context: Context): GameEnvironment.Config {
@@ -68,6 +69,7 @@ object GameEnvironmentStore {
             TextureFiltering.autoLodBias(SessionState.upscaleRatio),
         )
         if (dxvk.isNotEmpty()) json.put(DXVK_CONFIG, dxvk)
+        PowerVrGraphicsProfile.publication(context)?.let { json.put(GRAPHICS_PROFILE, it) }
         write(File(LinuxRuntime.rootDir(context), GUEST_FILE), json.toString())
     }
 

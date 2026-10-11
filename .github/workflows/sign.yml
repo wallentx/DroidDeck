@@ -37,25 +37,47 @@ jobs:
       matrix:
         variant: ${{ fromJSON(inputs.variants) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: The apk (this run's build)
         if: inputs.run_id == ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          name: droiddeck-apk
+          pattern: DroidDeck-*.apk
           path: in
+          merge-multiple: true
 
       - name: The apk (a main build)
         if: inputs.run_id != ''
+        id: source-artifact
         env:
           GH_TOKEN: ${{ github.token }}
           RUN: ${{ inputs.run_id }}
-        run: gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n droiddeck-apk -D in
+        run: |
+          set -euo pipefail
+          artifact_id=$(
+            set -o pipefail
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/artifacts?per_page=100" |
+              jq -r '[.[].artifacts[] | select(.expired | not) |
+                select(.name == "droiddeck-apk" or (.name | test("^DroidDeck-[0-9A-Za-z.+-]+\\.apk$"))) | .id] |
+                if length == 1 then .[0] else error("Expected one APK artifact") end'
+          )
+          echo "id=$artifact_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download the main build APK
+        if: inputs.run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.run_id }}
+          artifact-ids: ${{ steps.source-artifact.outputs.id }}
+          path: in
 
       - name: Sign
+        if: github.repository == 'Droid-Deck/DroidDeck'
         env:
           RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
@@ -88,7 +110,7 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/release.p12"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact }}-${{ matrix.variant }}
           path: out/*

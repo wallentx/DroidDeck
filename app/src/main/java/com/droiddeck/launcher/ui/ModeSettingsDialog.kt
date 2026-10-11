@@ -58,9 +58,12 @@ class ModeSettings(
     val panelSize: Pair<Int, Int> = 1280 to 720,
     val hdr: Boolean,
     val hdrReason: String?,
+    val sdrZeroCopy: Boolean = false,
     /** The GPU drivers in use, as the row that opens them on the Components page says it. */
     /** The drivers line; null shows Auto. */
     val gpuDrivers: String? = null,
+    /** PowerVR Steam profile status; null hides the device-specific row. */
+    val powerVrGraphics: String? = null,
     /** Frames per second the session is capped at; 0 = none. */
     val fpsLimit: Int = 0,
     val upscaler: Int = 0,
@@ -119,8 +122,10 @@ class ModeSettings(
 class ModeSettingsActions(
     val onResolution: (String) -> Unit,
     val onHdr: (Boolean) -> Unit,
+    val onSdrZeroCopy: (Boolean) -> Unit = {},
     /** Opens the GPU drivers on the Components page: they are shared by every session. */
     val onGpuDrivers: () -> Unit = {},
+    val onPowerVrGraphics: () -> Unit = {},
     val onFpsLimit: (Int) -> Unit = {},
     val onUpscaler: (Int) -> Unit = {},
     val onUpscaleSharpness: (Int) -> Unit = {},
@@ -237,9 +242,18 @@ fun ModeSettingsPage(s: ModeSettings, a: ModeSettingsActions) {
                     checked = s.hdr && s.hdrReason == null, enabled = s.hdrReason == null, onChange = a.onHdr,
                 )
             }
+            SettingsGroup(stringResource(R.string.display_presentation)) {
+                DisplayLayersRow(host, s.sdrZeroCopy, s.hdr && s.hdrReason == null, a.onSdrZeroCopy)
+            }
             SettingsGroup(stringResource(R.string.mode_drivers)) {
                 SettingsRow(stringResource(R.string.mode_gpu_drivers), stringResource(R.string.mode_gpu_drivers_hint)) {
                     ValueChip(s.gpuDrivers ?: stringResource(R.string.common_auto), open = false) { a.onGpuDrivers() }
+                }
+                if (steam && s.powerVrGraphics != null) SettingsRow(
+                    stringResource(R.string.power_vr_graphics_title),
+                    stringResource(R.string.power_vr_graphics_settings_hint),
+                ) {
+                    ValueChip(s.powerVrGraphics, open = false) { a.onPowerVrGraphics() }
                 }
             }
         }

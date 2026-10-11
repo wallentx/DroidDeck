@@ -751,6 +751,17 @@ object SessionPrefs {
         prefs(context).edit().putBoolean("hdr.$mode", on).apply()
     }
 
+    /** Prefer display layers for SDR, independently of HDR. Experimental and off by default. */
+    fun sdrZeroCopy(context: Context, mode: String): Boolean =
+        prefs(context).getBoolean("sdrZeroCopy.${prefMode(mode)}", false)
+
+    fun setSdrZeroCopy(context: Context, mode: String, on: Boolean) {
+        prefs(context).edit().putBoolean("sdrZeroCopy.${prefMode(mode)}", on).apply()
+    }
+
+    /** HDR needs the layer path even when the separate SDR preference is off. */
+    fun useDisplayLayers(hdr: Boolean, sdrZeroCopy: Boolean): Boolean = hdr || sdrZeroCopy
+
     /**
      * The session's frame cap, 0 for none. One number used everywhere a frame is paced: gamescope's
      * -r (what the client and its games see as the display's rate), the compositor's buffer release

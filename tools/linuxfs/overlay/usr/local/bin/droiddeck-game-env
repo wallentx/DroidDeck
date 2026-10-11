@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import json
+import hashlib
 import os
 import re
 import runpy
@@ -10,6 +11,219 @@ from pathlib import Path
 SYNC_KEYS = ("BL_SYNC_FALLBACK", "BL_FSYNC_FIRST", "BL_SYNC_MIN_NOFILE", "PROTON_NO_ESYNC", "PROTON_NO_FSYNC", "PROTON_NO_NTSYNC", "WINEESYNC")
 SEED_REDISTS = "/usr/local/bin/droiddeck-seed-redists"
 PACK_KEYS = ("WINESERVER", "BL_SYNC_PACK", "WINEESYNC", "PROTON_NO_ESYNC", "PROTON_NO_FSYNC")
+PROFILE_VERSION = re.compile(r"[0-9a-f]{64}")
+PROFILE_DLLS = ("d3d8.dll", "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll")
+PROFILE_CRITICAL = (
+    "run-proton.py",
+    *("dxvk/%s/%s" % (arch, dll) for arch in ("x32", "x64") for dll in PROFILE_DLLS),
+    "wsi/libVkLayer_window_system_integration.so",
+    "wsi/VkLayer_window_system_integration.json",
+)
+PROFILE_KEYS = (
+    "DROIDDECK_PROTON_WRAPPER", "HYBRIS_BC_TEXTURES", "VK_LAYER_PATH", "VK_INSTANCE_LAYERS",
+    "ENABLE_GAMESCOPE_WSI", "VK_LOADER_LAYERS_DISABLE", "DISABLE_WSI_LAYER",
+    "PROTON_USE_WINED3D", "DISABLE_VK_LAYER_VALVE_steam_fossilize_1",
+    "ENABLE_VK_LAYER_VALVE_steam_fossilize_1",
+)
+PROFILE_MANIFEST_LIMIT = 1024 * 1024
+PROFILE_RECEIPT_LIMIT = 128
+
+
+class GraphicsProfileError(ValueError):
+    pass
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def profile_file(pack, relative):
+    if (not isinstance(relative, str) or not relative or relative.startswith("/") or
+            "\\" in relative or "\0" in relative):
+        raise GraphicsProfileError("invalid managed file path")
+    if any(part in ("", ".", "..") for part in relative.split("/")):
+        raise GraphicsProfileError("invalid managed file path")
+    candidate = pack.joinpath(*relative.split("/"))
+    if candidate.is_symlink():
+        raise GraphicsProfileError("managed file is a symbolic link: %s" % relative)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise GraphicsProfileError("managed file is missing: %s" % relative) from error
+    try:
+        inside = os.path.commonpath((str(pack), str(resolved))) == str(pack)
+    except ValueError:
+        inside = False
+    if not inside:
+        raise GraphicsProfileError("managed file escapes the selected pack: %s" % relative)
+    return resolved
+
+
+def validate_profile_tree(pack, expected_files):
+    expected_directories = set()
+    for relative in expected_files:
+        parent = Path(relative).parent
+        while str(parent) != ".":
+            expected_directories.add(parent.as_posix())
+            parent = parent.parent
+    for folder, directories, files in os.walk(pack, followlinks=False):
+        folder = Path(folder)
+        for name in directories:
+            entry = folder / name
+            relative = entry.relative_to(pack).as_posix()
+            if entry.is_symlink() or relative not in expected_directories:
+                raise GraphicsProfileError("graphics profile contains an unexpected entry: %s" % relative)
+        for name in files:
+            entry = folder / name
+            relative = entry.relative_to(pack).as_posix()
+            if entry.is_symlink() or relative not in expected_files:
+                raise GraphicsProfileError("graphics profile contains an unexpected entry: %s" % relative)
+
+
+def validate_profile(profile):
+    if not isinstance(profile, dict) or profile.get("format") != 1:
+        raise GraphicsProfileError("unsupported graphics profile selection")
+    version = profile.get("version")
+    if not isinstance(version, str) or not PROFILE_VERSION.fullmatch(version):
+        raise GraphicsProfileError("invalid graphics profile version")
+    base_value = profile.get("packBase")
+    if not isinstance(base_value, str):
+        raise GraphicsProfileError("invalid graphics profile directory")
+    published_base = Path(base_value)
+    if not published_base.is_absolute() or tuple(published_base.parts[-3:]) != ("files", "graphics_profiles", "packs"):
+        raise GraphicsProfileError("graphics profile directory is outside app storage")
+    try:
+        base = published_base.resolve(strict=True)
+        pack = (base / version).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise GraphicsProfileError("selected graphics profile is not installed") from error
+    if pack.parent != base or pack.name != version or not pack.is_dir():
+        raise GraphicsProfileError("selected graphics profile directory is invalid")
+
+    published_files_dir = published_base.parent.parent
+    published_pack = published_base / version
+    hybris_value = profile.get("hybrisRuntime")
+    if not isinstance(hybris_value, str):
+        raise GraphicsProfileError("invalid system Vulkan runtime directory")
+    hybris = Path(hybris_value)
+    if (not hybris.is_absolute() or hybris.parent != published_files_dir / "system_vulkan" or
+            not PROFILE_VERSION.fullmatch(hybris.name)):
+        raise GraphicsProfileError("system Vulkan runtime is outside app storage")
+
+    validation = profile.get("validation")
+    if (not isinstance(validation, dict) or validation.get("receipt") != ".complete" or
+            validation.get("manifest") != "pack.json" or validation.get("criticalFiles") != list(PROFILE_CRITICAL)):
+        raise GraphicsProfileError("invalid graphics profile validation metadata")
+
+    receipt = profile_file(pack, ".complete")
+    try:
+        if receipt.stat().st_size > PROFILE_RECEIPT_LIMIT:
+            raise GraphicsProfileError("graphics profile receipt is too large")
+        if receipt.read_text(encoding="utf-8").strip() != version:
+            raise GraphicsProfileError("graphics profile receipt does not match the selection")
+    except (OSError, UnicodeError) as error:
+        raise GraphicsProfileError("graphics profile receipt is unreadable") from error
+    manifest_path = profile_file(pack, "pack.json")
+    try:
+        if manifest_path.stat().st_size > PROFILE_MANIFEST_LIMIT:
+            raise GraphicsProfileError("graphics profile manifest is too large")
+        manifest_bytes = manifest_path.read_bytes()
+    except OSError as error:
+        raise GraphicsProfileError("graphics profile manifest is unreadable") from error
+    if hashlib.sha256(manifest_bytes).hexdigest() != version:
+        raise GraphicsProfileError("graphics profile manifest does not match the selection")
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeError, ValueError, TypeError, RecursionError) as error:
+        raise GraphicsProfileError("graphics profile manifest is unreadable") from error
+    if not isinstance(manifest, dict) or manifest.get("format") != 1:
+        raise GraphicsProfileError("graphics profile manifest has an unsupported format")
+
+    described = {}
+    wrapper = manifest.get("wrapper")
+    if not isinstance(wrapper, dict) or wrapper.get("path") != "run-proton.py":
+        raise GraphicsProfileError("graphics profile manifest has an invalid wrapper")
+    described[wrapper.get("path")] = wrapper
+    archives = manifest.get("archives")
+    if not isinstance(archives, list):
+        raise GraphicsProfileError("graphics profile manifest has no archives")
+    archive_ids = set()
+    for archive in archives:
+        if (not isinstance(archive, dict) or archive.get("id") not in ("dxvk", "wsi") or
+                archive.get("id") in archive_ids or not isinstance(archive.get("files"), list)):
+            raise GraphicsProfileError("graphics profile manifest has an invalid archive")
+        archive_ids.add(archive["id"])
+        for entry in archive["files"]:
+            relative = entry.get("path") if isinstance(entry, dict) else None
+            if not isinstance(relative, str) or relative in described:
+                raise GraphicsProfileError("graphics profile manifest has an invalid file")
+            described[relative] = entry
+    if archive_ids != {"dxvk", "wsi"}:
+        raise GraphicsProfileError("graphics profile manifest is missing an archive")
+
+    for relative in PROFILE_CRITICAL:
+        if relative not in described:
+            raise GraphicsProfileError("graphics profile manifest omits %s" % relative)
+    for relative, entry in described.items():
+        if not isinstance(relative, str) or not isinstance(entry, dict):
+            raise GraphicsProfileError("graphics profile manifest has an invalid file")
+        size, checksum = entry.get("size"), entry.get("sha256")
+        if (not isinstance(size, int) or isinstance(size, bool) or size < 0 or
+                not isinstance(checksum, str) or not PROFILE_VERSION.fullmatch(checksum.lower())):
+            raise GraphicsProfileError("graphics profile metadata is invalid for %s" % relative)
+        target = profile_file(pack, relative)
+        try:
+            valid = target.is_file() and target.stat().st_size == size and file_sha256(target) == checksum.lower()
+        except OSError:
+            valid = False
+        if not valid:
+            raise GraphicsProfileError("graphics profile file is missing or corrupt: %s" % relative)
+        if relative == "run-proton.py" and not os.access(target, os.X_OK):
+            raise GraphicsProfileError("graphics profile wrapper is not executable")
+    validate_profile_tree(pack, set(described) | {".complete", "pack.json"})
+
+    expected = {
+        "DROIDDECK_PROTON_WRAPPER": str(published_pack / "run-proton.py"),
+        "HYBRIS_BC_TEXTURES": "dxvk",
+        "VK_LAYER_PATH": "%s:%s" % (published_pack / "wsi", hybris / "lib"),
+        "VK_INSTANCE_LAYERS": "VK_LAYER_window_system_integration:VK_LAYER_HYBRIS_compat",
+        "ENABLE_GAMESCOPE_WSI": "0",
+        "VK_LOADER_LAYERS_DISABLE": "*gamescope*",
+        "DISABLE_WSI_LAYER": None,
+        "PROTON_USE_WINED3D": None,
+        "DISABLE_VK_LAYER_VALVE_steam_fossilize_1": "1",
+        "ENABLE_VK_LAYER_VALVE_steam_fossilize_1": None,
+    }
+    managed = profile.get("managedEnvironment")
+    if not isinstance(managed, dict) or set(managed) != set(PROFILE_KEYS) or managed != expected:
+        raise GraphicsProfileError("graphics profile managed environment is invalid")
+    return managed
+
+
+def apply_graphics_profile(env, config):
+    profile = config.get("graphicsProfile")
+    if profile is None:
+        return env
+    managed = validate_profile(profile)
+    result = env.copy()
+    for name, value in managed.items():
+        if value is None:
+            result.pop(name, None)
+        else:
+            result[name] = value
+    return result
+
+
+def apply_graphics_profile_for_launch(command, env, config):
+    """Apply the managed profile only to a nonzero-app-id Proton game launch."""
+    if (not game_id(env) or len(command) < 2 or command[1] != "waitforexitandrun" or
+            config.get("graphicsProfile") is None):
+        return env
+    return apply_graphics_profile(env, config)
 
 
 def game_id(env):
@@ -258,6 +472,21 @@ def mark_install_scripts(command, env):
         print("droiddeck-game-env: install scripts not marked (%s)" % error, file=sys.stderr)
 
 
+def proton_launch(command, env):
+    """Apply an explicitly selected wrapper only to a real game launch."""
+    wrapper = env.get("DROIDDECK_PROTON_WRAPPER")
+    if not wrapper or not game_id(env) or len(command) < 2 or command[1] != "waitforexitandrun":
+        return command
+    if not os.path.isabs(wrapper) or not os.access(wrapper, os.X_OK):
+        raise OSError("DROIDDECK_PROTON_WRAPPER must name an executable absolute path")
+    return [wrapper, *command]
+
+
+def exec_proton(command, env):
+    command = proton_launch(command, env)
+    os.execvpe(command[0], command, env)
+
+
 def main():
     command = sys.argv[1:]
     if not command:
@@ -278,6 +507,7 @@ def main():
                 own = fixes.get("WINEDLLOVERRIDES")
                 fixes["WINEDLLOVERRIDES"] = components + ";" + own if own else components
         path = Path.home() / ".config/droiddeck/game-environment.json"
+        config = None
         try:
             with path.open(encoding="utf-8") as source:
                 config = json.load(source)
@@ -290,17 +520,26 @@ def main():
                 env = apply_config(env, {"version": 1}, app_id, fixes)
         except (OSError, ValueError, TypeError, AttributeError):
             print("droiddeck-game-env: invalid configuration; using inherited environment", file=sys.stderr)
+        if waiting and isinstance(config, dict) and config.get("graphicsProfile") is not None:
+            try:
+                # This app-owned profile owns its keys and is intentionally applied after the
+                # user's shared/game environment and DroidDeck's engine fixes.
+                env = apply_graphics_profile_for_launch(command, env, config)
+            except GraphicsProfileError as error:
+                print("droiddeck-game-env: experimental graphics profile unavailable (%s); repair it in DroidDeck" % error,
+                      file=sys.stderr)
+                return 1
     env = force_ssbs(command, env)
     sync = load_sync()
     launch, launch_env = select_sync(command, env, sync)
     if launch[0] != command[0]:
         try:
-            os.execvpe(launch[0], launch, launch_env)
+            exec_proton(launch, launch_env)
         except OSError as error:
             print("droiddeck-game-env: %s could not start (%s); stock launch" % (launch[0], error), file=sys.stderr)
             launch, launch_env = command, without_pack(launch_env, env)
             record_stock(sync, launch, launch_env)
-    os.execvpe(launch[0], launch, launch_env)
+    exec_proton(launch, launch_env)
 
 
 if __name__ == "__main__":

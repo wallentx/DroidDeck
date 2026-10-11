@@ -1,0 +1,3 @@
+# Diff context retains the exact upstream whitespace.
+tools/box64/patches/*.patch whitespace=-blank-at-eol
+tools/gamescope/patches/*.patch whitespace=-blank-at-eol,-space-before-tab
