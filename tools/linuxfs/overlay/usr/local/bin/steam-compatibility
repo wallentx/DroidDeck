@@ -73,7 +73,7 @@ bl_run() {
   if [ -n "${BL_STORE_EXIT:-}" ]; then
     "$@"
     rc=$?
-    /usr/local/bin/droiddeck-store-launch --exited "${BL_STORE_ARGS[@]}" || true
+    /usr/local/bin/droiddeck-store-launch --exited --code "$rc" "${BL_STORE_ARGS[@]}" || true
     exit $rc
   fi
   exec "$@"
@@ -131,8 +131,17 @@ bl_components() {
   ' "$cm_list")
   local cm_rows=() cm_files=() row h p
   local -A cm_sums=()
+  local cm_dxvk=${DROIDDECK_SYSTEM_VULKAN_DXVK:-}
+  if [ -z "$cm_dxvk" ]; then
+    cm_dxvk=managed
+    [ "${DROIDDECK_SYSTEM_VULKAN_GPU:-}" = mali ] && cm_dxvk=user
+  fi
   while IFS=$'\\t' read -r scope t want comp rel sum src; do
     [ -n "$scope" ] || continue
+    # Managed profiles supply DXVK at launch; preserve saved choices for other sessions.
+    # User-managed profiles retain the selected Proton/DXVK instead of replacing it.
+    [ "$comp" = dxvk ] && [ "$cm_dxvk" = managed ] \
+      && [ -n "${DROIDDECK_SYSTEM_VULKAN_RUNTIME:-${DROIDDECK_POWERVR_RUNTIME:-}}" ] && continue
     cm_rows+=("$comp"$'\\t'"$rel"$'\\t'"$sum"$'\\t'"$src")
     [ "$src" != "-" ] && [ -f "$base/$rel" ] && cm_files+=("$base/$rel")
   done <<< "$cm_selected"
@@ -660,6 +669,26 @@ def launch_programs(config):
     return found
 
 
+def launch_options(config):
+    """An app's launch options as Steam lists them: executable, arguments, working folder, type and oslist."""
+    launch = config.get("launch") if isinstance(config, dict) else None
+    found = []
+    for key, option in launch.items() if isinstance(launch, dict) else ():
+        if not isinstance(option, dict) or not option.get("executable"):
+            continue
+        settings = option.get("config") if isinstance(option.get("config"), dict) else {}
+        found.append({
+            "key": str(key),
+            "executable": str(option["executable"]),
+            "arguments": str(option.get("arguments", "")),
+            "workingdir": str(option.get("workingdir", "")),
+            "type": str(option.get("type", "")).lower(),
+            "oslist": str(settings.get("oslist", "")).lower(),
+            "betakey": str(settings.get("betakey", "")),
+        })
+    return found
+
+
 def appinfo_entries(path):
     import struct
     try:
@@ -751,6 +780,7 @@ def appinfo_entries(path):
             "type": str(common.get("type", "")).lower(),
             "recommended": str(recommended),
             "launch": launch_programs(info.get("config")),
+            "launch_options": launch_options(info.get("config")),
         }
         if app == STEAM_PLAY_MANIFESTS:
             extended = info.get("extended", {})

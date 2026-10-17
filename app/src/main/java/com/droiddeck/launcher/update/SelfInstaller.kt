@@ -10,14 +10,14 @@ import android.os.Build
 import android.provider.Settings
 import com.droiddeck.launcher.BuildConfig
 import com.droiddeck.launcher.R
+import com.droiddeck.launcher.core.Downloader
 import com.droiddeck.launcher.core.FileUtils
 import com.droiddeck.launcher.core.Hashes
+import com.android.apksig.ApkVerifier
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
+import java.security.cert.Certificate
 
 object SelfInstaller {
     const val ACTION_STATUS = "com.droiddeck.launcher.update.INSTALL_STATUS"
@@ -30,32 +30,14 @@ object SelfInstaller {
 
     fun download(context: Context, apk: AppUpdates.Apk, progress: (Int) -> Unit): File {
         val dir = File(context.cacheDir, "updates")
-        FileUtils.delete(dir)
-        dir.mkdirs()
-        val target = File(dir, apk.name)
-        val c = URL(apk.url).openConnection() as HttpURLConnection
-        c.connectTimeout = 15_000
-        c.readTimeout = 60_000
-        c.setRequestProperty("User-Agent", "DroidDeck-app")
-        c.instanceFollowRedirects = true
+        if (!dir.isDirectory && !dir.mkdirs()) throw IOException("Could not create update directory")
+        val target = updateFile(context, apk)
+        val root = dir.canonicalFile
+        if (target.canonicalFile.parentFile != root) throw IOException("Invalid update path")
+        dir.listFiles()?.forEach { if (it != target) FileUtils.delete(it) }
+        val ok = Downloader.downloadFile(apk.url, target, true, apk.sha256) { f -> progress(if (f < 0) -1 else (f * 100).toInt()) }
+        if (!ok) throw IOException(context.getString(R.string.selfinst_download_failed))
         try {
-            if (c.responseCode != 200) throw IOException(context.getString(R.string.selfinst_http, c.responseCode))
-            val total = c.contentLengthLong.takeIf { it > 0 } ?: apk.size
-            c.inputStream.use { input ->
-                FileOutputStream(target).use { out ->
-                    val buf = ByteArray(1 shl 16)
-                    var done = 0L
-                    var last = -1
-                    while (true) {
-                        val r = input.read(buf)
-                        if (r <= 0) break
-                        out.write(buf, 0, r)
-                        done += r
-                        val pct = if (total > 0) (done * 100 / total).toInt() else -1
-                        if (pct != last) { last = pct; progress(pct) }
-                    }
-                }
-            }
             if (apk.size > 0 && target.length() != apk.size) {
                 throw IOException(context.getString(R.string.selfinst_size_mismatch))
             }
@@ -63,20 +45,30 @@ object SelfInstaller {
                 throw IOException(context.getString(R.string.selfinst_checksum_mismatch))
             }
             validateDownloaded(context, target, apk)
-            return target
         } catch (e: Exception) {
             FileUtils.delete(target)
             throw e
-        } finally {
-            c.disconnect()
         }
+        return target
     }
+
+    internal fun updateFile(context: Context, apk: AppUpdates.Apk): File =
+        File(File(context.cacheDir, "updates"), "${apk.sha256.lowercase()}.apk")
 
     private fun validateDownloaded(context: Context, file: File, apk: AppUpdates.Apk) {
         if (apk.packageName != context.packageName) {
             throw IOException(context.getString(R.string.selfinst_wrong_package, apk.packageName, context.packageName))
         }
-        if (!apk.signerSha256.equals(BuildConfig.RELEASE_SIGNER, ignoreCase = true)) {
+        if (!Regex("^[0-9a-fA-F]{64}$").matches(apk.signerSha256)) throw IOException(context.getString(R.string.selfinst_metadata_signer))
+
+        val downloadedSigners = verifiedApk(file)
+        val installedApk = File(context.applicationInfo.sourceDir)
+        val installedSigners = verifiedApk(installedApk)
+        if (!compatibleUpdate(installedSigners.device, downloadedSigners.device) ||
+            !compatibleUpdate(installedSigners.producer, downloadedSigners.producer)) {
+            throw IOException(context.getString(R.string.selfinst_wrong_signer))
+        }
+        if (downloadedSigners.producer.current.none { it.equals(apk.signerSha256, true) }) {
             throw IOException(context.getString(R.string.selfinst_metadata_signer))
         }
         @Suppress("DEPRECATION")
@@ -99,16 +91,40 @@ object SelfInstaller {
             throw IOException(context.getString(R.string.selfinst_downgrade, code, BuildConfig.VERSION_CODE))
         }
 
-        if (Build.VERSION.SDK_INT >= 28) {
-            val signing = info.signingInfo ?: throw IOException(context.getString(R.string.selfinst_no_signing))
-            val digests = signing.apkContentsSigners.orEmpty().map { cert ->
-                MessageDigest.getInstance("SHA-256").digest(cert.toByteArray())
-                    .joinToString("") { "%02x".format(it) }
-            }
-            if (digests.none { it.equals(BuildConfig.RELEASE_SIGNER, ignoreCase = true) }) {
-                throw IOException(context.getString(R.string.selfinst_wrong_signer))
-            }
+    }
+
+    internal data class VerifiedIdentity(val current: Set<String>, val lineage: Set<String>)
+    internal data class VerifiedApk(val device: VerifiedIdentity, val producer: VerifiedIdentity)
+
+    internal fun compatibleUpdate(installed: VerifiedIdentity, downloaded: VerifiedIdentity): Boolean =
+        downloaded.current.any { it in installed.current } || installed.current.any { it in downloaded.lineage }
+
+    internal fun verifiedApk(file: File): VerifiedApk {
+        val device = verifiedSigners(file, Build.VERSION.SDK_INT)
+        val producer = verifiedSigners(file, maxOf(Build.VERSION.SDK_INT, 28))
+        return VerifiedApk(device, producer)
+    }
+
+    internal fun verifiedSigners(file: File, platformVersion: Int): VerifiedIdentity {
+        val result = try {
+            ApkVerifier.Builder(file)
+                .setMinCheckedPlatformVersion(platformVersion)
+                .setMaxCheckedPlatformVersion(platformVersion)
+                .build()
+                .verify()
+        } catch (e: Exception) {
+            throw IOException("Could not verify APK signatures", e)
         }
+        if (!result.isVerified) throw IOException("APK signature verification failed")
+        if (result.signerCertificates.isEmpty()) throw IOException("APK has no verified signer")
+        fun digests(certificates: Collection<Certificate>): Set<String> = certificates.mapTo(LinkedHashSet()) { certificate ->
+            MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+                .joinToString("") { "%02x".format(it) }
+        }
+        return VerifiedIdentity(
+            digests(result.signerCertificates),
+            digests(result.signingCertificateLineage?.certificatesInLineage.orEmpty()),
+        )
     }
 
     fun install(context: Context, apk: File) {

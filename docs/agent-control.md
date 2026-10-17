@@ -26,14 +26,14 @@ and reports every run.
 
 Player controls and observations work over authorized ADB on any build: `state`, `start`, `stop`,
 `resume`, `wait`, `launch`, `quit`, `focus`, `input`, `ui`, `logs`, `screenshot`, `record`, `pacing`,
-`displays`, `wake`, and `access`.
+`displays`, `wake`, `glasses` (except `glasses raw`), and `access`.
 
 **Setup > Diagnostics > Debugging tools** is off by default in every build, including debug builds.
-It enables `run`, `guest`, `cdp`, all `env` operations, `override`, and `prefs`. The toggle switches
-directly without a confirmation dialog. The bridge refuses to change it through `ui` or preference
-writes. The existing preference key, `setting-agent-commands` test tag, JSON command names, and
-`AGENT_COMMANDS_DISABLED` error code are unchanged. Refusals exit 7; `droiddeckctl access` reports
-whether commands are enabled.
+It enables `run`, `guest`, `cdp`, all `env` operations, `override`, `prefs`, and `glasses raw`. The
+toggle switches directly without a confirmation dialog. The bridge refuses to change it through `ui`
+or preference writes. The existing preference key, `setting-agent-commands` test tag, JSON command
+names, and `AGENT_COMMANDS_DISABLED` error code are unchanged. Refusals exit 7; `droiddeckctl access`
+reports whether commands are enabled.
 
 Disabling the toggle clears queued and persistent agent environment settings and installed binary
 overrides. Disabled settings cannot apply at the next session start. Already running commands and
@@ -80,6 +80,7 @@ artifact or file error, 7 debugging tools disabled.
 tools/droiddeckctl state
 tools/droiddeckctl start steam --wait
 tools/droiddeckctl start steam --wait --reuse
+tools/droiddeckctl start steam --steamvr --wait
 tools/droiddeckctl start desktop
 tools/droiddeckctl run /usr/bin/foo -- arg1 arg2
 tools/droiddeckctl wait ready|idle|failed
@@ -117,11 +118,37 @@ tools/droiddeckctl prefs set session some_key true --type bool
 
 tools/droiddeckctl logs latest ./session-artifacts
 tools/droiddeckctl screenshot ./screen.png --display 4
+tools/droiddeckctl xr-frame ./xr-capture
 tools/droiddeckctl record ./clip.mp4 --seconds 8 --display 0
 tools/droiddeckctl pacing --seconds 30
 tools/droiddeckctl displays
 tools/droiddeckctl wake
+
+tools/droiddeckctl glasses status
+tools/droiddeckctl glasses set refreshHz 120
+tools/droiddeckctl glasses set 3d on
+tools/droiddeckctl glasses simulate --seconds 6 --yaw 15
+tools/droiddeckctl glasses stop-simulate
+tools/droiddeckctl glasses mode 0x34
+tools/droiddeckctl glasses raw 0x0007
 ```
+
+Glasses status reports `deviceMode` from the MCU separately from `sbs`, which
+requires a physical stereo display mode. `switching3d` marks the bounded
+confirmation window. A successful mode-command reply alone does not confirm 3D.
+`badFrames` counts reports and IMU packets dropped for a bad checksum.
+
+`xr-frame` captures both app eye textures while SteamVR is open, saving `left.png`,
+`right.png` and `capture.json` with the matching source frame, projection poses,
+FOV and dimensions. It works over wired or wireless authorized ADB.
+Newer builds also include `source.png`, the incoming stereo texture before the
+Android eye draw, and sRGB attachment/write state in the metadata for color debugging.
+Source PNGs use the incoming frame's color space and eye PNGs use sRGB. Transfers use Android's
+gzip utility to avoid sending full uncompressed images over wireless ADB.
+A unique request ID prevents stale images from passing as a fresh capture; no valid XR
+layer produces an explicit error. Captures exclude Meta system overlays and
+the headset compositor's final reprojection. GPU readback runs only on request
+and can briefly affect frame timing. Remote files are overwritten each time.
 
 A sleeping device suspends the session and hides the app's windows from `ui dump`; `wake` first.
 
@@ -141,7 +168,7 @@ mode except the desktop).
 `state` returns `schema`, `build`, `appVersion`, `runtime {installed, version}`,
 `agent {guest, guestFocus, commands}` and `session`:
 
-- `id`, `phase`, `running`, `mode`, `program`, `steamUi`, `steamUrl`, `suspended`, `pip`,
+- `id`, `phase`, `running`, `mode`, `program`, `steamUi`, `steamUrl`, `steamVr`, `suspended`, `pip`,
   `firstFrame`, `output` [w, h], `refreshHz`, `lastTransitionAt`, `guestPid`, `installing`
 - `logDir`, `eventsFile`, `artifactsAvailable`, `artifactsComplete`, `failure {code, message, status}`
 - `focus`: gamescope's focus as the guest agent last published it, or null:
@@ -176,7 +203,7 @@ Automator show them:
 | `play-steam` | Play on the Steam and Games pages |
 | `setting-<key>` | every toggle and choice row, by its key (`setting-logs`, `setting-agent-commands`, ...) |
 | `tab-<n>` | a page's tab strip (Setup's Overview, Controller, Session, Launcher...), by position |
-| `drawer-tab-controller`, `-second_screen`, `-display`, `-effects`, `-games`, `-session` | the session drawer's pages |
+| `drawer-tab-controller`, `-second_screen`, `-display`, `-effects`, `-vr`, `-games`, `-session` | the session drawer's pages |
 | `drawer-stop`, `drawer-stop-confirm`, `drawer-stop-cancel` | stopping a session from the drawer |
 
 ## Scenarios

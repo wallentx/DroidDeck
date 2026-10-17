@@ -261,6 +261,7 @@ object AutoComponents {
     internal fun signature(context: Context, game: Library.SteamGame): String {
         val folder = game.gameFiles
         val parts = listOfNotNull(
+            "font-requirements-v1",
             folder?.lastModified(),
             folder?.let { SteamRedists.manifest(it, game.appId)?.lastModified() },
             folder?.let { StoreGameSidecar.file(it).lastModified() },
@@ -332,7 +333,7 @@ object AutoComponents {
             caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
-    private fun constrained(context: Context): Boolean {
+    fun constrained(context: Context): Boolean {
         val power = context.getSystemService(PowerManager::class.java)
         if (power?.isPowerSaveMode == true) return true
         if (Build.VERSION.SDK_INT >= 29 && (power?.currentThermalStatus ?: 0) >= PowerManager.THERMAL_STATUS_MODERATE) return true

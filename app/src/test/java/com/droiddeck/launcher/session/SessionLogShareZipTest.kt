@@ -2,6 +2,10 @@ package com.droiddeck.launcher.session
 
 import com.droiddeck.launcher.runtime.LinuxRuntime
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.zip.ZipFile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -17,6 +21,49 @@ import org.robolectric.annotation.Config
 class SessionLogShareZipTest {
     private val app get() = RuntimeEnvironment.getApplication()
 
+    @Test fun aLargeSteamLogIsRedactedInTheSharedArchive() {
+        val session = File(LinuxRuntime.logDir(app), "2026-10-08-02-steam").apply { mkdirs() }
+        val raw = File(session, "steam-42.log")
+        val earlySecret = "early-sessionid-abcdef123456"
+        val trailingSecret = "late-refresh-token-abcdef123456"
+        try {
+            // One long line exercises the streaming limit; the final ordinary line must still be redacted.
+            raw.bufferedWriter().use { out ->
+                out.write("sessionid=$earlySecret")
+                val chunk = "x".repeat(8192)
+                repeat(8192) { out.write(chunk) }
+                out.write("\nrefresh_token=$trailingSecret\n")
+            }
+            assertTrue(raw.length() > 64L * 1024 * 1024)
+
+            val zip = SessionLogShare.zipFolder(app, session)!!
+            ZipFile(zip).use { archive ->
+                val entry = archive.getEntry("${session.name}/steam-42.log")!!
+                archive.getInputStream(entry).use { input ->
+                    // Only inspect the bounded scrubbed prefix: the pre-fix raw archive is over 64 MiB.
+                    val expected = "${com.droiddeck.launcher.core.LogRedactor.OVERSIZED_LINE}\n"
+                    val prefix = ByteArray(expected.toByteArray(StandardCharsets.UTF_8).size)
+                    var offset = 0
+                    while (offset < prefix.size) {
+                        val count = input.read(prefix, offset, prefix.size - offset)
+                        assertTrue("zip entry ended before its scrubbed prefix", count > 0)
+                        offset += count
+                    }
+                    assertEquals(expected, String(prefix, StandardCharsets.UTF_8))
+                    input.bufferedReader().use { reader ->
+                        val trailing = requireNotNull(reader.readLine())
+                        assertFalse("trailing secret survived", trailing.contains(trailingSecret))
+                        assertEquals("refresh_token=<redacted:token>", trailing)
+                        assertEquals(null, reader.readLine())
+                    }
+                }
+            }
+        } finally {
+            SessionLogShare.clear(app)
+            session.deleteRecursively()
+        }
+    }
+
     @Test fun everyTextFileInTheZipIsScrubbedAndTheStoresAndToolsLogsComeAlong() {
         val logs = LinuxRuntime.logDir(app)
         val session = File(logs, "2026-10-08-01-steam").apply { mkdirs() }
@@ -27,13 +74,15 @@ class SessionLogShareZipTest {
                 "Authorization: Bearer abc.def.ghi\n" +
                 "kept: EResult 5, app 1086940, steamapps/common/Game\n"
         )
-        File(logs, "stores").apply { mkdirs() }.resolve("stores-2026-10-08.log").writeText("epic: f_token=zzzzzzzz12 window 32\n")
+        // StoreLogFiles.prune, started by App.onCreate, deletes a stores log named for a day over a week old.
+        val storesLog = "stores-" + SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) + ".log"
+        File(logs, "stores").apply { mkdirs() }.resolve(storesLog).writeText("epic: f_token=zzzzzzzz12 window 32\n")
         File(logs, SessionPaths.TOOLS_DIR).apply { mkdirs() }.resolve("flatpak-install.log").writeText("== install\nCookie: steamLoginSecure=76561198000000000%7C%7Ceyabc\n")
 
         val zip = SessionLogShare.zipFolder(app, session)!!
         assertTrue(zip.path.startsWith(File(app.cacheDir, "share").path))
         val text = ZipFile(zip).use { z -> z.entries().toList().associate { e -> e.name to z.getInputStream(e).bufferedReader().readText() } }
-        assertTrue(text.keys.containsAll(listOf("2026-10-08-01-steam/session.log", "stores/stores-2026-10-08.log", "tools/flatpak-install.log")))
+        assertTrue(text.keys.containsAll(listOf("2026-10-08-01-steam/session.log", "stores/$storesLog", "tools/flatpak-install.log")))
         val all = text.values.joinToString("\n")
         for (secret in listOf("0a1b2c3d4e5f", "deadbeefcafe", "abcdef123456", "someone@example.com", "AUTHCODE123", "abc.def.ghi", "zzzzzzzz12", "eyabc")) {
             assertFalse("$secret survived", all.contains(secret))

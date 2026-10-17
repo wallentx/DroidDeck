@@ -2,10 +2,17 @@ package com.droiddeck.launcher.core
 
 import android.app.ActivityManager
 import android.content.Context
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Environment
+import android.os.PerformanceHintManager
+import android.os.PowerManager
 import android.os.StatFs
+import android.provider.Settings
 import android.util.Log
+import android.view.Display
+import com.droiddeck.launcher.gpu.DeviceInfo
+import com.droiddeck.launcher.gpu.SystemVulkanDriver
 import com.droiddeck.launcher.gpu.LinuxVulkanDriver
 import com.droiddeck.launcher.gpu.LinuxVulkanDriverManager
 import com.droiddeck.launcher.gpu.TurnipDriver
@@ -31,6 +38,57 @@ object DeviceReport {
             Log.w(TAG, "could not write $target", e)
         }
     }
+
+    /** Name of an ApplicationExitInfo reason code, so a report says "LOW_MEMORY" instead of "3". */
+    internal fun exitReasonName(reason: Int): String = when (reason) {
+        0 -> "UNKNOWN"
+        1 -> "EXIT_SELF"
+        2 -> "SIGNALED"
+        3 -> "LOW_MEMORY"
+        4 -> "CRASH"
+        5 -> "CRASH_NATIVE"
+        6 -> "ANR"
+        7 -> "INITIALIZATION_FAILURE"
+        8 -> "PERMISSION_CHANGE"
+        9 -> "EXCESSIVE_RESOURCE_USAGE"
+        10 -> "USER_REQUESTED"
+        11 -> "USER_STOPPED"
+        12 -> "DEPENDENCY_DIED"
+        13 -> "OTHER"
+        14 -> "FREEZER"
+        15 -> "PACKAGE_STATE_CHANGE"
+        16 -> "PACKAGE_UPDATED"
+        else -> "REASON_$reason"
+    }
+
+    internal fun thermalStatusName(status: Int): String = when (status) {
+        0 -> "NONE"
+        1 -> "LIGHT"
+        2 -> "MODERATE"
+        3 -> "SEVERE"
+        4 -> "CRITICAL"
+        5 -> "EMERGENCY"
+        6 -> "SHUTDOWN"
+        else -> "STATUS_$status"
+    }
+
+    internal fun gameModeName(mode: Int): String = when (mode) {
+        0 -> "UNSUPPORTED"
+        1 -> "STANDARD"
+        2 -> "PERFORMANCE"
+        3 -> "BATTERY"
+        4 -> "CUSTOM"
+        else -> "MODE_$mode"
+    }
+
+    internal fun refreshModesSummary(rates: List<Float>): String =
+        rates.map { Math.round(it) }.distinct().sortedDescending().joinToString(", ") { "$it Hz" }
+
+    internal fun exitSummary(processName: String?, reason: Int, status: Int, description: String?): String =
+        buildString {
+            append(processName ?: "?").append("  ").append(exitReasonName(reason)).append("  status=").append(status)
+            if (!description.isNullOrBlank()) append("  ").append(description.trim())
+        }
 
     fun build(context: Context, mode: String): String {
         val b = StringBuilder()
@@ -68,6 +126,20 @@ object DeviceReport {
         k("Fingerprint", Build.FINGERPRINT)
         k("Kernel", System.getProperty("os.version"))
         k("ABIs", Build.SUPPORTED_ABIS.joinToString(", "))
+        k("Memory page size", runCatching { android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE) }.getOrNull()?.let { "$it bytes" })
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            h("Recent process exits")
+            val exits = runCatching {
+                context.getSystemService(android.app.ActivityManager::class.java).getHistoricalProcessExitReasons(context.packageName, 0, 5)
+            }.getOrNull().orEmpty()
+            if (exits.isEmpty()) k("Exits", "none recorded") else {
+                val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                for (e in exits) {
+                    k(stamp.format(Date(e.timestamp)), exitSummary(e.processName, e.reason, e.status, e.description))
+                }
+            }
+        }
 
         h("CPU and memory")
         k("Cores", CpuCores.all.size)
@@ -83,6 +155,19 @@ object DeviceReport {
             k("RAM available", FileUtils.sizeToString(mi.availMem))
         }
         runCatching {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) k("Thermal status", thermalStatusName(pm.currentThermalStatus))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                k("Thermal headroom (10 s)", pm.getThermalHeadroom(10).let { if (it.isNaN()) "not reported" else String.format(Locale.US, "%.2f", it) })
+            }
+            k("Power saver", pm.isPowerSaveMode)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val rate = runCatching { context.getSystemService(PerformanceHintManager::class.java)?.preferredUpdateRateNanos }.getOrNull()
+            k("ADPF hint sessions", if (rate == null || rate <= 0) "not supported" else "supported (preferred update ${rate / 1000} us)")
+            k("Game Mode", runCatching { context.getSystemService(android.app.GameManager::class.java)?.gameMode }.getOrNull()?.let { gameModeName(it) })
+        }
+        runCatching {
             val fs = StatFs(context.filesDir.path)
             k("App storage free", FileUtils.sizeToString(fs.availableBlocksLong * fs.blockSizeLong))
         }
@@ -94,11 +179,21 @@ object DeviceReport {
         h("GPU")
         k("KGSL gpu_model", readSys("/sys/class/kgsl/kgsl-3d0/gpu_model"))
         k("KGSL chip id", readSys("/sys/class/kgsl/kgsl-3d0/gpu_chipid"))
-        k("System Vulkan ICD", if (File("/vendor/lib64/hw/vulkan.adreno.so").exists()) "/vendor/lib64/hw/vulkan.adreno.so" else "not at the usual path")
+        k("System Vulkan ICD", SystemVulkanDriver.hal() ?: when {
+            File("/vendor/lib64/hw/vulkan.adreno.so").exists() -> "/vendor/lib64/hw/vulkan.adreno.so"
+            else -> "not at the usual path"
+        })
 
         h("Display")
         k("Session output", SessionState.outputSize?.let { "${it.first}x${it.second}" })
         k("Session refresh", String.format(Locale.US, "%.2f Hz", SessionState.refreshHz))
+        runCatching {
+            val display = context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+            k("Panel refresh now", String.format(Locale.US, "%.2f Hz", display.refreshRate))
+            k("Panel refresh modes", refreshModesSummary(display.supportedModes.map { it.refreshRate }))
+        }
+        k("peak_refresh_rate", runCatching { Settings.System.getString(context.contentResolver, "peak_refresh_rate") }.getOrNull() ?: "not set")
+        k("refresh_rate_mode", runCatching { Settings.Secure.getString(context.contentResolver, "refresh_rate_mode") }.getOrNull() ?: "not set")
         val panelSize = com.droiddeck.launcher.session.SessionDisplay.panelSize(context)
         for ((label, mode) in listOf("Resolution (Steam)" to SessionService.MODE_STEAM, "Resolution (Desktop)" to SessionService.MODE_DESKTOP)) {
             val choice = SessionPrefs.resolutionChoice(context, mode, panelSize)
@@ -115,16 +210,20 @@ object DeviceReport {
                 com.droiddeck.launcher.gpu.TurnipReleases.cached(context)))?.let { " (recommended pair: $it)" } ?: ""))
         val turnip = TurnipDriver(context)
         val androidChoice = SessionPrefs.androidDriver(context)
-        k("Display driver (chosen)", if (androidChoice.isEmpty()) "Auto -> ${turnip.autoId()}" else androidChoice)
-        k("  name / version", "${turnip.displayName(if (androidChoice.isEmpty()) turnip.autoId() else androidChoice)} ${turnip.driverVersion(if (androidChoice.isEmpty()) turnip.autoId() else androidChoice)}".trim())
+        val displayId = androidChoice.ifEmpty { turnip.autoId() }
+        val displayLabel = if (displayId == "system") DeviceInfo.builtinDriverLabel(SystemVulkanDriver.profile(), runtime = false)
+            else "${turnip.displayName(displayId)} ${turnip.driverVersion(displayId)}".trim()
+        k("Display driver (chosen)", if (androidChoice.isEmpty()) "Auto -> $displayLabel" else androidChoice)
+        k("  name / version", displayLabel)
         k("  imported available", turnip.enumerateImported().ifEmpty { listOf("none") }.joinToString(", "))
         val lm = LinuxVulkanDriverManager(context)
         run {
             val id = SessionPrefs.linuxDriver(context)
-            val label = if (id.isEmpty()) "runtime default (the Turnip built into the runtime)"
+            val label = if (id.isEmpty()) DeviceInfo.builtinDriverLabel(SystemVulkanDriver.profile(), runtime = true)
             else "${lm.getDriverName(id)} ${lm.getDriverVersion(id)}".trim() +
                 lm.getMinGlibc(id).let { if (it.isEmpty()) "" else " (glibc $it+)" } +
-                if (lm.isInstalled(id)) "" else "  [MISSING - falls back to the runtime's own]"
+                if (lm.isInstalled(id)) "" else if (SystemVulkanDriver.isSupportedGpu()) "  [MISSING - select an installed driver or Auto]"
+                else "  [MISSING - falls back to the runtime's own]"
             k("Linux driver", label)
         }
         k("Runtime's own ICD", LinuxRuntime.vulkanIcd(context)?.path)

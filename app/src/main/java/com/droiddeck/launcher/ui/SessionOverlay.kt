@@ -149,8 +149,10 @@ import java.util.Locale
 
 private val SessionDrawerPage.title: Int get() = when (this) {
     SessionDrawerPage.CONTROLLER -> R.string.drawer_page_controller
+    SessionDrawerPage.GLASSES -> R.string.drawer_page_glasses
     SessionDrawerPage.SECOND_SCREEN -> R.string.drawer_second_screen
     SessionDrawerPage.DISPLAY -> R.string.drawer_page_display
+    SessionDrawerPage.VR -> R.string.vr_title
     SessionDrawerPage.EFFECTS -> R.string.drawer_page_effects
     SessionDrawerPage.GAMES -> R.string.game_settings_title
     SessionDrawerPage.SESSION -> R.string.mode_session
@@ -158,8 +160,10 @@ private val SessionDrawerPage.title: Int get() = when (this) {
 
 private val SessionDrawerPage.icon get() = when (this) {
     SessionDrawerPage.CONTROLLER -> Icons.Outlined.SportsEsports
+    SessionDrawerPage.GLASSES -> GlassesIcon
     SessionDrawerPage.SECOND_SCREEN -> Icons.Outlined.ScreenShare
     SessionDrawerPage.DISPLAY -> Icons.Outlined.DesktopWindows
+    SessionDrawerPage.VR -> VrHeadsetIcon
     SessionDrawerPage.EFFECTS -> Icons.Outlined.AutoFixHigh
     SessionDrawerPage.GAMES -> Icons.Outlined.Layers
     SessionDrawerPage.SESSION -> Icons.Outlined.Settings
@@ -209,6 +213,9 @@ class DrawerActions(
     val cardboard: Cardboard = Cardboard.OFF,
     val cardboardSensor: Boolean = false,
     val steamVr: SteamVr.Status? = null,
+    val glassesPresent: Boolean = false,
+    val glassesOutput: Boolean = false,
+    val immersiveSteamVr: Boolean = false,
     val textureAnisotropy: Int? = 0,
     val textureLodBias: String? = TextureFiltering.LOD_BIAS_OFF,
     val secondScreenMode: SecondScreenMode,
@@ -244,6 +251,7 @@ class DrawerActions(
     val onEffects: (ScreenEffects) -> Unit = {},
     val onCardboard: (Cardboard) -> Unit = {},
     val onCardboardRecenter: () -> Unit = {},
+    val onGlassesRecenter: () -> Unit = {},
     val onSteamVr: (String) -> Unit = {},
     val onTextureAnisotropy: (Int?) -> Unit = {},
     val onTextureLodBias: (String?) -> Unit = {},
@@ -262,6 +270,8 @@ class DrawerActions(
     val onStopFrom: ((androidx.compose.ui.geometry.Rect?) -> Unit)? = null,
     val onClose: () -> Unit,
     val components: ComponentsManager.Snapshot? = null,
+    val runtimeManagedDxvk: Boolean = false,
+    val systemDriverName: String = "",
     val onComponentsRefresh: () -> Unit = {},
     val componentCatalog: List<ComponentsManager.CatalogItem> = emptyList(),
     val componentCatalogAt: Long = 0,
@@ -284,12 +294,15 @@ class DrawerActions(
     val onGameNoSteam: (Long, Boolean) -> Unit = { _, _ -> },
     val onComponentSwap: (protonId: String, comp: String, value: String) -> Unit = { _, _, _ -> },
     val onGameComponent: (appId: Long, comp: String, file: String?) -> Unit = { _, _, _ -> },
+    val defaultProtonId: String? = null,
+    val onDefaultProton: (protonId: String) -> Unit = {},
+    val onGameProton: (appId: Long, protonId: String?) -> Unit = { _, _ -> },
 )
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 internal fun SessionDrawer(open: Boolean, requestedPage: SessionDrawerPage, controllerActive: Boolean, onPageChange: (SessionDrawerPage) -> Unit, a: DrawerActions) {
-    val pages = sessionDrawerPages(a.steam && a.secondScreenDisplays.isNotEmpty())
+    val pages = sessionDrawerPages(a.steam && a.secondScreenDisplays.isNotEmpty(), a.glassesPresent)
     val page = requestedPage.takeIf { it in pages } ?: SessionDrawerPage.CONTROLLER
     LaunchedEffect(requestedPage, pages) { if (page != requestedPage) onPageChange(page) }
     val colors = MaterialTheme.colorScheme
@@ -452,11 +465,14 @@ internal fun SessionDrawer(open: Boolean, requestedPage: SessionDrawerPage, cont
                                     stringResource(R.string.display_sharpness), null, a.upscaleSharpness, 0..100, step = 5,
                                     format = { "$it%" }, modifier = focus.track(page, "upscale-sharpness"), onChange = a.onUpscaleSharpness)
                             }
-                            CardboardGroup(host, a) { key -> focus.track(page, key) }
                         }
                         SessionDrawerPage.EFFECTS -> {
                             ScreenEffectsGroup(host, a, advancedEffectsExpanded,
                                 onAdvancedToggle = { advancedEffectsExpanded = !advancedEffectsExpanded }) { key -> focus.track(page, key) }
+                        }
+                        SessionDrawerPage.VR -> {
+                            SteamVrGroup(a) { key -> focus.track(page, key) }
+                            if (!a.glassesOutput) CardboardGroup(host, a) { key -> focus.track(page, key) }
                         }
                         SessionDrawerPage.CONTROLLER -> {
                             SettingsGroup(stringResource(R.string.drawer_page_controller)) {
@@ -522,6 +538,12 @@ internal fun SessionDrawer(open: Boolean, requestedPage: SessionDrawerPage, cont
                         }
                         SessionDrawerPage.SECOND_SCREEN -> {
                             SecondScreenGroup(host, a) { key -> focus.track(page, key) }
+                        }
+                        SessionDrawerPage.GLASSES -> {
+                            val (g, s) = rememberGlasses()
+                            GlassesGroups(host, g, s, { key -> focus.track(page, key) }, onRecenter = a.onGlassesRecenter,
+                                outputActive = a.glassesOutput, steamVrRunning = a.steamVr == SteamVr.Status.RUNNING,
+                                steamVr = { SteamVrRow(a) })
                         }
                         SessionDrawerPage.GAMES -> {
                             if (a.steam) SelectedGameProfileGroup(host, a) { key -> focus.track(page, key) }
@@ -915,18 +937,46 @@ private fun CardboardGroup(host: MenuHost, a: DrawerActions, track: (String) -> 
         }
         if (c.headTracking && a.cardboardSensor)
             ActionRow(stringResource(R.string.cardboard_recenter), null, stringResource(R.string.cardboard_recenter_button), a.onCardboardRecenter)
+    }
+}
+
+@Composable
+private fun SteamVrGroup(a: DrawerActions, track: (String) -> Modifier) {
+    SettingsGroup(stringResource(R.string.steamvr_title)) {
         val vrLabel = stringResource(R.string.cardboard_steamvr)
-        when (a.steamVr) {
-            SteamVr.Status.NOT_INSTALLED -> ActionRow(vrLabel, stringResource(R.string.cardboard_steamvr_install_hint),
-                stringResource(R.string.cardboard_steamvr_install), { a.onSteamVr("install") })
-            SteamVr.Status.INSTALLING -> SettingsRow(vrLabel, stringResource(R.string.cardboard_steamvr_installing)) {}
-            SteamVr.Status.READY -> ActionRow(vrLabel, stringResource(R.string.cardboard_steamvr_ready_hint),
-                stringResource(R.string.cardboard_steamvr_start), { a.onSteamVr("start") })
-            SteamVr.Status.RUNNING -> ActionRow(vrLabel, stringResource(R.string.cardboard_steamvr_running_hint),
-                stringResource(R.string.cardboard_steamvr_stop), { a.onSteamVr("stop") })
-            SteamVr.Status.UNAVAILABLE -> SettingsRow(vrLabel, stringResource(R.string.cardboard_steamvr_unavailable)) {}
-            null -> {}
+        val enterLabel = stringResource(if (a.immersiveSteamVr) R.string.steamvr_enter else R.string.cardboard_steamvr_start)
+        @Composable fun button(label: String, text: String, action: String) {
+            SettingsRow(label, null) {
+                SecondaryButton(text, modifier = track("steamvr"), onClick = { a.onSteamVr(action) })
+            }
         }
+        when (a.steamVr) {
+            SteamVr.Status.NOT_INSTALLED -> button(vrLabel, stringResource(R.string.cardboard_steamvr_install), "install")
+            SteamVr.Status.INSTALLING -> SettingsRow(vrLabel, stringResource(R.string.cardboard_steamvr_installing)) {}
+            SteamVr.Status.READY -> button(vrLabel, enterLabel, "start")
+            SteamVr.Status.RUNNING -> {
+                if (a.immersiveSteamVr) button(vrLabel, enterLabel, "start")
+                SettingsRow(vrLabel, null) {
+                    SecondaryButton(stringResource(R.string.cardboard_steamvr_stop),
+                        modifier = track(if (a.immersiveSteamVr) "steamvr-stop" else "steamvr"), onClick = { a.onSteamVr("stop") })
+                }
+            }
+            SteamVr.Status.UNAVAILABLE -> SettingsRow(vrLabel, stringResource(R.string.cardboard_steamvr_unavailable)) {}
+            null -> SettingsRow(vrLabel, stringResource(R.string.steamvr_checking)) {}
+        }
+    }
+}
+
+@Composable
+private fun SteamVrRow(a: DrawerActions) {
+    val vrLabel = stringResource(R.string.cardboard_steamvr)
+    when (a.steamVr) {
+        SteamVr.Status.NOT_INSTALLED -> ActionRow(vrLabel, null, stringResource(R.string.cardboard_steamvr_install), { a.onSteamVr("install") })
+        SteamVr.Status.INSTALLING -> SettingsRow(vrLabel, stringResource(R.string.cardboard_steamvr_installing)) {}
+        SteamVr.Status.READY -> ActionRow(vrLabel, null, stringResource(R.string.cardboard_steamvr_start), { a.onSteamVr("start") })
+        SteamVr.Status.RUNNING -> ActionRow(vrLabel, null, stringResource(R.string.cardboard_steamvr_stop), { a.onSteamVr("stop") })
+        SteamVr.Status.UNAVAILABLE -> SettingsRow(vrLabel, stringResource(R.string.cardboard_steamvr_unavailable)) {}
+        null -> {}
     }
 }
 
@@ -1092,7 +1142,11 @@ private fun SelectedGameProfileGroup(host: MenuHost, a: DrawerActions, track: (S
             for (component in ComponentsManager.COMPONENTS) {
                 val value = profile.components.getValue(component)
                 if (!value.inherited) {
-                    ProfileSummaryRow(ComponentsManager.LABEL.getValue(component), profileValueLabel(value))
+                    ProfileSummaryRow(
+                        ComponentsManager.LABEL.getValue(component),
+                        if (ComponentsManager.runtimeManaged(component, a.runtimeManagedDxvk)) stringResource(R.string.gpu_system_driver, a.systemDriverName)
+                        else profileValueLabel(value),
+                    )
                 }
             }
             if (profile.startWithoutSteam) {
@@ -1184,25 +1238,40 @@ private fun ComponentsDrawerPage(host: MenuHost, a: DrawerActions, track: (Strin
             return
         }
         SettingsGroup(stringResource(R.string.drawer_page_components)) {
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp)) {
-                ProfileSummaryRow(stringResource(R.string.comp_proton), gameProfile.proton.value)
-            }
+            DrawerStackedChoice(
+                host = host,
+                key = "game-cmp-proton",
+                label = stringResource(R.string.comp_proton),
+                hint = if (gameProfile.proton.inherited && gameProfile.proton.value.isNotEmpty()) {
+                    stringResource(R.string.drawer_component_inherited, gameProfile.proton.value)
+                } else {
+                    null
+                },
+                options = listOf<Pair<String?, String>>(null to stringResource(R.string.comp_game_use_general)) +
+                    snap.protons.map { it.proton.id to it.proton.name },
+                selected = if (gameProfile.proton.inherited) null else gameProfile.protonId,
+                chipModifier = track("cmp-proton"),
+                onPick = { id -> a.onGameProton(gameProfile.appId, id) },
+            )
             for (comp in ComponentsManager.COMPONENTS) {
                 val value = gameProfile.components.getValue(comp)
+                val managedDxvk = ComponentsManager.runtimeManaged(comp, a.runtimeManagedDxvk)
                 val options: List<Pair<String?, String>> =
                     listOf(null to stringResource(R.string.comp_game_use_general)) +
-                        snap.packages.filter { it.comp == comp }.map { it.file to it.version }
+                        if (managedDxvk) emptyList() else snap.packages.filter { it.comp == comp }.map { it.file to it.version }
                 DrawerStackedChoice(
                     host = host,
                     key = "game-cmp-$comp",
                     label = ComponentsManager.LABEL.getValue(comp),
-                    hint = if (value.inherited) {
+                    hint = if (managedDxvk) stringResource(R.string.cmgr_system_dxvk_managed, a.systemDriverName) else if (value.inherited) {
                         stringResource(R.string.drawer_component_inherited, value.value)
                     } else {
                         null
                     },
                     options = options,
                     selected = gameProfile.componentFiles[comp],
+                    enabled = !managedDxvk || gameProfile.componentFiles[comp] != null,
+                    valueLabel = if (managedDxvk) stringResource(R.string.gpu_system_driver, a.systemDriverName) else null,
                     chipModifier = track("cmp-$comp"),
                     onPick = { file -> a.onGameComponent(gameProfile.appId, comp, file) },
                 )
@@ -1217,8 +1286,7 @@ private fun ComponentsDrawerPage(host: MenuHost, a: DrawerActions, track: (Strin
         return
     }
     val running = snap.protons.filter { it.inUseByGame }
-    var pick by rememberSaveable { mutableStateOf<String?>(null) }
-    val view = snap.protons.firstOrNull { it.proton.id == pick } ?: running.firstOrNull() ?: snap.protons.firstOrNull()
+    val view = snap.protons.firstOrNull { it.proton.id == a.defaultProtonId } ?: running.firstOrNull() ?: snap.protons.firstOrNull()
     SettingsGroup(stringResource(R.string.drawer_running_now)) {
         val src = remember { MutableInteractionSource() }
         val hot = src.collectIsFocusedAsState().value
@@ -1237,7 +1305,11 @@ private fun ComponentsDrawerPage(host: MenuHost, a: DrawerActions, track: (Strin
                 for (comp in ComponentsManager.COMPONENTS) {
                     Row(modifier = Modifier.fillMaxWidth().padding(top = 3.dp)) {
                         Text(ComponentsManager.LABEL.getValue(comp), fontSize = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.width(96.dp))
-                        Text(r.components.getValue(comp).inUse, fontSize = 12.sp, color = colors.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            if (ComponentsManager.runtimeManaged(comp, a.runtimeManagedDxvk)) stringResource(R.string.gpu_system_driver, a.systemDriverName)
+                            else r.components.getValue(comp).inUse,
+                            fontSize = 12.sp, color = colors.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
@@ -1259,22 +1331,27 @@ private fun ComponentsDrawerPage(host: MenuHost, a: DrawerActions, track: (Strin
                 view.reappliedAt.takeIf { it > 0 }?.let { stringResource(R.string.drawer_reapplied, java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(it * 1000))) },
             ).joinToString(" · "),
             snap.protons.map { it.proton.id to it.proton.name }, p.id,
-            chipModifier = track("cmp-proton"), onPick = { pick = it },
+            chipModifier = track("cmp-proton"), onPick = { if (it != p.id) a.onDefaultProton(it) },
         )
         val originalLabel = stringResource(R.string.drawer_original)
         val build = ComponentsManager.safeName(p.version)
         for (comp in ComponentsManager.COMPONENTS) {
             val st = view.components.getValue(comp)
+            val managedDxvk = ComponentsManager.runtimeManaged(comp, a.runtimeManagedDxvk)
             val originals = view.originals.filter { it.comp == comp }
             val options = originals.map { "orig:${it.protonVersion}" to (if (it.protonVersion == build) originalLabel else stringResource(R.string.comp_original, it.protonVersion)) } +
                 snap.packages.filter { it.comp == comp }.map { it.file to it.version }
-            if (options.isEmpty()) continue
+            if (options.isEmpty() && !managedDxvk) continue
             val current = st.activeFile ?: "orig:$build"
             val shown = options.firstOrNull { it.first == current }?.second
             DrawerStackedChoice(
                 host, "cmp-$comp", ComponentsManager.LABEL.getValue(comp),
-                st.queued?.let { stringResource(R.string.comp_next_queued, it) } ?: st.inUse.takeIf { it != shown },
+                if (managedDxvk) stringResource(R.string.cmgr_system_dxvk_managed, a.systemDriverName) +
+                    (st.queued?.let { "\n" + stringResource(R.string.cmgr_powervr_dxvk_queued, it) } ?: "")
+                else st.queued?.let { stringResource(R.string.comp_next_queued, it) } ?: st.inUse.takeIf { it != shown },
                 options, current,
+                enabled = !managedDxvk,
+                valueLabel = if (managedDxvk) stringResource(R.string.gpu_system_driver, a.systemDriverName) else null,
                 note = if (view.inUseByGame) stringResource(R.string.comp_waits_long) else stringResource(R.string.comp_applies_long),
                 chipModifier = track("cmp-$comp"),
                 onPick = { v -> if (v != current || st.queued != null) a.onComponentSwap(p.id, comp, v) },
@@ -1368,11 +1445,11 @@ internal fun ComponentDownloadsDrawerGroup(
 private fun <T> DrawerStackedChoice(
     host: MenuHost, key: String, label: String, hint: String?,
     options: List<Pair<T, String>>, selected: T, note: String? = null,
-    chipModifier: Modifier = Modifier, onPick: (T) -> Unit,
+    chipModifier: Modifier = Modifier, enabled: Boolean = true, valueLabel: String? = null, onPick: (T) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val pal = LocalPalette.current
-    val open = host.open == key
+    val open = host.open == key && enabled
     Column(
         modifier = Modifier.fillMaxWidth()
             .background(if (open) pal.signal.copy(alpha = 0.10f) else Color.Transparent)
@@ -1380,7 +1457,7 @@ private fun <T> DrawerStackedChoice(
     ) {
         Text(label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = colors.onBackground)
         Box(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
-            ValueChip(options.firstOrNull { it.first == selected }?.second ?: "-", open, modifier = chipModifier.fillMaxWidth()) {
+            ValueChip(valueLabel ?: options.firstOrNull { it.first == selected }?.second ?: "-", open, enabled = enabled, modifier = chipModifier.fillMaxWidth()) {
                 host.open = if (open) null else key
             }
             AnchoredMenu(open, onDismiss = { if (host.open == key) host.open = null }, title = label, note = note) { firstItemFocus ->
