@@ -16,7 +16,7 @@ GRAPHICS_KEYS = (
     "DROIDDECK_HYBRIS_SESSION_BC_TEXTURES", "HYBRIS_BC_TEXTURES",
     "DROIDDECK_POWERVR_RUNTIME", "VK_LAYER_PATH", "VK_INSTANCE_LAYERS",
     "WSI_X11_FORCE_SHM", "ENABLE_GAMESCOPE_WSI", "VK_LOADER_LAYERS_DISABLE",
-    "DISABLE_WSI_LAYER", "XDG_SESSION_TYPE", "WAYLAND_DISPLAY", "LD_LIBRARY_PATH",
+    "DISABLE_WSI_LAYER", "XDG_SESSION_TYPE", "WAYLAND_DISPLAY", "LD_LIBRARY_PATH", "LD_PRELOAD",
 )
 OUTER_PROFILE = {
     "VK_LAYER_PATH": "/outer/lib",
@@ -48,12 +48,14 @@ class MangoAppPresentationTest(unittest.TestCase):
             )
             binary.chmod(0o755)
             starts = root / "starts"
+            shim = root / "libsysfs-listing-shim.so"
             source = MANGOAPP.read_text()
             # Exercise the complete production wrapper; redirect only its absolute paths.
             for original, replacement in (
                 ("starts=/tmp/droiddeck-mangoapp-starts", f"starts={shlex.quote(str(starts))}"),
                 ("LD_LIBRARY_PATH=/usr/local/lib/mangoapp", f"LD_LIBRARY_PATH={shlex.quote(str(library))}"),
                 ("exec /usr/local/lib/mangoapp/mangoapp", f"exec {shlex.quote(str(binary))}"),
+                ("LD_PRELOAD=/usr/local/lib/mangoapp/libsysfs-listing-shim.so", f"LD_PRELOAD={shlex.quote(str(shim))}"),
             ):
                 self.assertEqual(source.count(original), 1)
                 source = source.replace(original, replacement, 1)
@@ -79,6 +81,7 @@ class MangoAppPresentationTest(unittest.TestCase):
             self.assertEqual(child["graphics"]["XDG_SESSION_TYPE"], "x11")
             self.assertEqual(child["graphics"]["WAYLAND_DISPLAY"], "wayland-0")
             self.assertEqual(child["graphics"]["LD_LIBRARY_PATH"], f"{library}:/outer/libraries")
+            self.assertEqual(child["graphics"]["LD_PRELOAD"], str(shim))
             self.assertEqual(len(starts.read_text().splitlines()), 1)
             return child["graphics"]
 
@@ -118,8 +121,23 @@ class MangoAppPresentationTest(unittest.TestCase):
             "DROIDDECK_POWERVR_RUNTIME": "/legacy runtime",
         }), "/legacy runtime")
 
-    def test_powervr_adreno_and_manual_drivers_keep_existing_profile(self):
-        for gpu in ("powervr", "xclipse", "adreno", ""):
+    def test_powervr_native_presents_over_x11_without_shm(self):
+        for key in ("DROIDDECK_SYSTEM_VULKAN_RUNTIME", "DROIDDECK_POWERVR_RUNTIME"):
+            with self.subTest(runtime_key=key):
+                graphics = self.launch({"DROIDDECK_SYSTEM_VULKAN_GPU": "powervr", key: "/runtime"})
+                self.assertEqual(graphics["VK_LAYER_PATH"], "/runtime/wsi:/runtime/lib")
+                self.assertEqual(graphics["VK_INSTANCE_LAYERS"],
+                                 "VK_LAYER_window_system_integration:VK_LAYER_HYBRIS_compat")
+                self.assertEqual(graphics["WSI_X11_FORCE_SHM"], "0")
+                self.assertEqual(graphics["ENABLE_GAMESCOPE_WSI"], "0")
+                self.assertEqual(graphics["VK_LOADER_LAYERS_DISABLE"], "*gamescope*")
+                self.assertIsNone(graphics["DISABLE_WSI_LAYER"])
+
+    def test_powervr_without_a_system_runtime_keeps_existing_profile(self):
+        self.assert_outer_profile(self.launch({"DROIDDECK_SYSTEM_VULKAN_GPU": "powervr"}))
+
+    def test_adreno_xclipse_and_manual_drivers_keep_existing_profile(self):
+        for gpu in ("xclipse", "adreno", ""):
             with self.subTest(gpu=gpu):
                 self.assert_outer_profile(self.launch({
                     "DROIDDECK_SYSTEM_VULKAN_GPU": gpu,
