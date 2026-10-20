@@ -35,7 +35,7 @@ class SettingsResetTest {
         SessionPrefs.setGameDebugLogsEnabled(app, true)
         ControllerPrefs.setOpacity(app, 40)
         AppUiPrefs.setScale(app, 150)
-        FrameGen.set(app, FrameGen.Mode(FrameGen.ENGINE_WINFG, 3))
+        FrameGen.set(app, FrameGen.Mode(FrameGen.ENGINE_DDFG, 3))
         prefs("steam_touch").edit().putBoolean("gyro", false).commit()
 
         assertTrue(SettingsReset.resetAll(app, gameProfiles = false))
