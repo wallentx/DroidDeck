@@ -23,6 +23,9 @@ int hybris_clip_enabled(void) { return 1; }
 int hybris_clip_active(VkPhysicalDevice p) { (void)p; return 1; }
 int hybris_vertex_stores_active(VkPhysicalDevice p) { (void)p; return 0; }
 int hybris_shader_cleanup_enabled(void) { return 0; }
+VkResult hybris_shader_cleanup_code(const uint32_t *c, size_t s,
+    const VkAllocationCallbacks *a, uint32_t **o, size_t *os)
+{ (void)c; (void)s; (void)a; *o = NULL; *os = 0; return VK_SUCCESS; }
 int hybris_shader_command_allowed(const char *n) { (void)n; return 1; }
 int hybris_clip_command_allowed(const char *n) { (void)n; return 1; }
 int hybris_clip_pipeline(const VkGraphicsPipelineCreateInfo *info)
