@@ -37,6 +37,7 @@ class DriverRow(val id: String, val name: String, val detail: String, val remova
         const val DOWNLOADED = "DOWNLOADED"
         const val IMPORTED = "IMPORTED"
         const val BUNDLE = "ANDROID + LINUX"
+        const val LEGACY = "LEGACY"
     }
 }
 
@@ -46,6 +47,7 @@ internal fun driverTagLabel(tag: String): String = when (tag) {
     DriverRow.DOWNLOADED -> stringResource(R.string.driver_tag_downloaded)
     DriverRow.IMPORTED -> stringResource(R.string.driver_tag_imported)
     DriverRow.BUNDLE -> stringResource(R.string.driver_tag_bundle)
+    DriverRow.LEGACY -> stringResource(R.string.gpu_system_legacy_installation)
     else -> tag
 }
 
@@ -250,7 +252,7 @@ fun ModeSheetRows(s: ModeSettings, a: ModeSettingsActions, tab: String, extras: 
         SettingsGroup(if (steam) stringResource(R.string.mode_touch_controls) else stringResource(R.string.mode_touch)) {
             ChoiceRow(
                 host, "touch", stringResource(R.string.mode_touch), null,
-                listOf(SessionPrefs.TOUCH_AUTO to stringResource(R.string.common_auto), SessionPrefs.TOUCH_PAD to stringResource(R.string.mode_touch_touchpad), SessionPrefs.TOUCH_DIRECT to stringResource(R.string.mode_touch_direct), SessionPrefs.TOUCH_OFF to stringResource(R.string.widgets_off)), s.touchMode,
+                listOf(SessionPrefs.TOUCH_AUTO to stringResource(R.string.common_auto), SessionPrefs.TOUCH_PAD to stringResource(R.string.mode_touch_touchpad), SessionPrefs.TOUCH_DIRECT to stringResource(R.string.mode_touch_direct), SessionPrefs.TOUCH_GESTURES to stringResource(R.string.mode_touch_gestures), SessionPrefs.TOUCH_OFF to stringResource(R.string.widgets_off)), s.touchMode,
                 note = stringResource(R.string.mode_touch_note),
                 onPick = a.onTouch,
             )
