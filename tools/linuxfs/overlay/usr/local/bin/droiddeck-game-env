@@ -523,6 +523,51 @@ def exec_proton(command, env):
     os.execvpe(command[0], command, env)
 
 
+def call_proton(command, env):
+    # Xbox must retain this process until the game exits so its lease can be released.
+    command, env = system_graphics_launch(command, env)
+    return subprocess.call(command, env=env)
+
+
+def proton_launchable(command):
+    try:
+        return bool(command and Path(command[0]).is_file() and
+                    os.access(command[0], os.R_OK | os.X_OK))
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def xbox_proton_runner(selected_command, stock_command, stock_env, sync):
+    using_stock = False
+    selected_checked = False
+
+    def run(command, env):
+        nonlocal selected_checked, using_stock
+        record_fallback = False
+        if not selected_checked:
+            selected_checked = True
+            if selected_command[0] != stock_command[0] and not proton_launchable(selected_command):
+                using_stock = True
+                record_fallback = True
+        if using_stock:
+            command = [stock_command[0], *command[1:]]
+            env = without_pack(env, stock_env)
+            if record_fallback:
+                record_stock(sync, command, env)
+        try:
+            return call_proton(command, env)
+        except OSError:
+            if using_stock or selected_command[0] == stock_command[0]:
+                raise
+            using_stock = True
+            command = [stock_command[0], *command[1:]]
+            env = without_pack(env, stock_env)
+            record_stock(sync, command, env)
+            return call_proton(command, env)
+
+    return run
+
+
 def main():
     command = sys.argv[1:]
     if not command:
@@ -567,20 +612,22 @@ def main():
     if mic_enabled == "0":
         env["BANNER_AUDIO_DIRECT_MIC"] = "0"
     env = force_ssbs(command, env)
+    sync = load_sync()
+    launch, launch_env = select_sync(command, env, sync)
     try:
         xbox = runpy.run_path(str(Path(__file__).with_name("droiddeck-xbox")))
     except Exception as error:
         print("droiddeck-game-env: Xbox support unavailable (%s); stock launch" % error, file=sys.stderr)
-        xbox = {"launch": lambda command, env: None}
+        xbox = {"launch": lambda command, env, runner=None: None}
     try:
-        xbox_result = xbox["launch"](command, env)
+        xbox_result = xbox["launch"](
+            launch, launch_env, xbox_proton_runner(launch, command, env, sync)
+        )
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         print("droiddeck-game-env: Xbox launch could not start (%s)" % error, file=sys.stderr)
         return 1
     if xbox_result is not None:
         return xbox_result
-    sync = load_sync()
-    launch, launch_env = select_sync(command, env, sync)
     if launch[0] != command[0]:
         try:
             exec_proton(launch, launch_env)

@@ -594,6 +594,96 @@ class PlacedMemoryLaunchTest(unittest.TestCase):
                              "VK_LAYER_window_system_integration:VK_LAYER_HYBRIS_compat:" + self.layer)
             self.assertEqual(env, saved)
 
+    def test_xbox_game_uses_selected_sync_pack_and_managed_gpu_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for gpu in ("powervr", "mali"):
+                with self.subTest(gpu=gpu):
+                    root = Path(tmp) / gpu
+                    root.mkdir()
+                    if gpu == "mali":
+                        runtime, env = self.mali_profile(root)
+                    else:
+                        runtime, _ = self.runtime(root)
+                        env = self.environment(runtime)
+                    self.components(runtime)
+                    prepared = self.executable(root, name="prepared.exe")
+                    env.update(HOME=str(root), VK_ICD_FILENAMES=str(runtime / "icd.json"))
+                    command = ["/stock/proton", "waitforexitandrun", "/encrypted/Game.exe", "--custom"]
+                    selected_proton = root / "sync-pack/proton"
+                    selected_proton.parent.mkdir()
+                    selected_proton.write_text("#!/usr/bin/python3\n")
+                    selected_proton.chmod(0o755)
+                    selected = [str(selected_proton), *command[1:]]
+                    selected_env = dict(env, WINESERVER="/sync-pack/wineserver", BL_SYNC_PACK="selected")
+                    detected = []
+
+                    def xbox_launch(actual, actual_env, runner):
+                        detected.append((actual, actual_env))
+                        return runner([actual[0], actual[1], str(prepared), *actual[3:]], actual_env)
+
+                    main = MODULE["main"]
+                    with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["game-env", *command]), \
+                            patch.dict(main.__globals__, {"load_sync": lambda: {},
+                                                         "select_sync": lambda *args: (selected, selected_env),
+                                                         "win_components": lambda *args: ""}), \
+                            patch("runpy.run_path", return_value={"launch": xbox_launch}), \
+                            patch.object(subprocess, "call", return_value=7) as call, \
+                            patch.object(os, "execvpe") as execute:
+                        self.assertEqual(main(), 7)
+
+                    self.assertEqual(detected[0][0], selected)
+                    self.assertEqual(detected[0][1]["BL_SYNC_PACK"], "selected")
+                    execute.assert_not_called()
+                    launch = call.call_args.args[0]
+                    actual_env = call.call_args.kwargs["env"]
+                    self.assertEqual(launch, [str(runtime / "run-proton.py"), str(selected_proton),
+                                              "waitforexitandrun", str(prepared), "--custom"])
+                    self.assertEqual(actual_env["WINESERVER"], "/sync-pack/wineserver")
+                    self.assertEqual(actual_env[self.setting], "1")
+                    self.assertTrue(actual_env["VK_INSTANCE_LAYERS"].endswith(":" + self.layer))
+
+    def test_xbox_unlaunchable_selected_sync_uses_stock_inside_the_lease(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime, env = self.mali_profile(root)
+            self.components(runtime)
+            prepared = self.executable(root, name="prepared.exe")
+            env.update(HOME=tmp, VK_ICD_FILENAMES=str(runtime / "icd.json"))
+            command = ["/stock/proton", "waitforexitandrun", "/encrypted/Game.exe"]
+            selected = [str(root / "missing-sync-pack/proton"), *command[1:]]
+            selected_env = dict(env, WINESERVER="/sync-pack/wineserver", BL_SYNC_PACK="selected")
+            released = unittest.mock.Mock()
+
+            def xbox_launch(actual, actual_env, runner):
+                owned_env = dict(actual_env, XODUS_BRIDGE_KEY="lease-key")
+                try:
+                    return runner([actual[0], actual[1], str(prepared)], owned_env)
+                finally:
+                    released()
+
+            main = MODULE["main"]
+            record = unittest.mock.Mock()
+            with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["game-env", *command]), \
+                    patch.dict(main.__globals__, {"load_sync": lambda: {},
+                                                 "select_sync": lambda *args: (selected, selected_env),
+                                                 "record_stock": record, "win_components": lambda *args: ""}), \
+                    patch("runpy.run_path", return_value={"launch": xbox_launch}), \
+                    patch.object(subprocess, "call", return_value=7) as call:
+                self.assertEqual(main(), 7)
+
+            released.assert_called_once()
+            call.assert_called_once()
+            stock_call = call.call_args
+            self.assertEqual(stock_call.args[0], [str(runtime / "run-proton.py"),
+                                                   "/stock/proton", "waitforexitandrun", str(prepared)])
+            self.assertNotIn("WINESERVER", stock_call.kwargs["env"])
+            self.assertNotIn("BL_SYNC_PACK", stock_call.kwargs["env"])
+            self.assertEqual(stock_call.kwargs["env"]["XODUS_BRIDGE_KEY"], "lease-key")
+            self.assertTrue(stock_call.kwargs["env"]["VK_INSTANCE_LAYERS"].endswith(":" + self.layer))
+            record.assert_called_once()
+            self.assertEqual(record.call_args.args[1],
+                             ["/stock/proton", "waitforexitandrun", str(prepared)])
+
     def test_mali_default_requires_the_managed_experimental_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
