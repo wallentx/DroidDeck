@@ -108,6 +108,7 @@ object SessionFiles {
             "usr/local/lib/mangoapp/libglfw.so.3",
             "usr/local/lib/mangoapp/libtraceevent.so.1",
             "usr/local/lib/mangoapp/libtracefs.so.1",
+            "usr/local/lib/mangoapp/libsysfs-listing-shim.so",
         ).map { it to it }
         val msitools = listOf("msiinfo", "cabextract", "7z", "7z.so", "libmsi-1.0.so.0", "libgsf-1.so.114", "libgcab-1.0.so.0")
             .map { "usr/local/lib/droiddeck-msitools/$it" } +

@@ -11,6 +11,11 @@ on:
         description: Full source commit of that build
         required: true
         type: string
+      variants:
+        description: JSON array of package variants to sign
+        required: false
+        type: string
+        default: '["standard"]'
   workflow_call:
     inputs:
       environment:
@@ -100,7 +105,7 @@ jobs:
           [ ${#apks[@]} = 1 ] && [ -f "${apks[0]}" ]
           tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)
           "$tools/aapt" dump badging "${apks[0]}" > "$RUNNER_TEMP/version-badging.txt"
-          grep -qF "package: name='com.droiddeck.launcher' versionCode='16' versionName='0.5.0-wallentx.3-startupfix'" \
+          grep -qF "package: name='com.droiddeck.launcher' versionCode='17' versionName='0.5.0-wallentx.4'" \
             "$RUNNER_TEMP/version-badging.txt"
 
       - name: Sign
@@ -110,7 +115,7 @@ jobs:
           RELEASE_KEY_ALIAS: droiddeck
           ENVIRONMENT: ${{ inputs.environment || 'signing-main' }}
           VARIANT: ${{ matrix.variant }}
-          LABEL: ${{ inputs.expected_sha != '' && '0.5.0-wallentx.3-startupfix' || inputs.label }}
+          LABEL: ${{ inputs.expected_sha != '' && '0.5.0-wallentx.4' || inputs.label }}
           MANUAL_FORK: ${{ inputs.expected_sha != '' }}
         run: |
           set -euo pipefail

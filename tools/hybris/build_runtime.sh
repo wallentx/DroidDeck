@@ -40,6 +40,10 @@ mkdir -p "$work/vulkan-headers"
   tar -C /usr/include -cf - vulkan vk_video | tar -C "$work/vulkan-headers" -xf -
 HYBRIS_PUSH_SOURCE="$work/libhybris" VULKAN_INCLUDE="$work/vulkan-headers" python3 -m unittest discover \
   -s "$root/tools/tests" -p test_hybris_push_descriptors.py
+VULKAN_INCLUDE="$work/vulkan-headers" python3 -m unittest discover \
+  -s "$root/tools/tests" -p test_hybris_strip_names.py
+VULKAN_INCLUDE="$work/vulkan-headers" python3 -m unittest discover \
+  -s "$root/tools/tests" -p test_hybris_zink_profile.py
 git -C "$work/libhybris" apply --check "$root/tools/hybris/powervr-hal-version.patch"
 git -C "$work/libhybris" apply "$root/tools/hybris/powervr-hal-version.patch"
 for patch in "$root"/tools/hybris/patches/*.patch; do

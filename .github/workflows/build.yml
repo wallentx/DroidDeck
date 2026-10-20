@@ -27,8 +27,12 @@ on:
         type: choice
         options: [powervr, xclipse, mali]
         default: powervr
+      system_vulkan_version:
+        description: Optional System Vulkan release version (vMAJOR.MINOR.PATCH)
+        type: string
+        default: ''
       wallentx_preview:
-        description: Build the startup fix as an update to wallentx Preview 3
+        description: Build wallentx Preview 4 as an in-place fork update
         type: boolean
         default: false
 
@@ -62,11 +66,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           COMPONENT_VARIANT: ${{ inputs.system_vulkan_variant }}
+          COMPONENT_VERSION: ${{ inputs.system_vulkan_version }}
         run: |
           set -euo pipefail
           python3 -m unittest tools.tests.test_powervr_runtime tools.tests.test_system_vulkan_components
           repository_id=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .id)
-          version="v0.0.0-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          version="${COMPONENT_VERSION:-v0.0.0-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}}"
           python3 tools/powervr/package_components.py \
             --output out/system-vulkan \
             --repository "$GITHUB_REPOSITORY" \
@@ -149,6 +154,7 @@ jobs:
           name: dxvk-xclipse-${{ github.sha }}
           path: out/dxvk-xclipse/
           if-no-files-found: error
+
   xbox:
     name: Xbox ARM64 backend
     if: ${{ (github.event_name != 'workflow_dispatch' || inputs.component == 'apk') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
@@ -356,8 +362,8 @@ jobs:
           path = Path('app/build.gradle')
           source = path.read_text()
           for old, new in (
-              (r'(?m)^        versionCode 14$', '        versionCode 16'),
-              (r'(?m)^        versionName "0\.5\.0"$', '        versionName "0.5.0-wallentx.3-startupfix"'),
+              (r'(?m)^        versionCode 14$', '        versionCode 17'),
+              (r'(?m)^        versionName "0\.5\.0"$', '        versionName "0.5.0-wallentx.4"'),
           ):
               source, count = re.subn(old, new, source)
               if count != 1:
