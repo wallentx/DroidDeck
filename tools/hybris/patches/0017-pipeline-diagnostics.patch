@@ -1,6 +1,6 @@
 --- a/hybris/vulkan/compat/shader_dispatch.c
 +++ b/hybris/vulkan/compat/shader_dispatch.c
-@@ -21,9 +21,13 @@
+@@ -22,9 +22,13 @@
  #include "bc_context.h"
  #include "../layer/layer.h"
  #include <stdatomic.h>
@@ -14,7 +14,7 @@
  
  
  struct shader {
-@@ -65,6 +69,105 @@
+@@ -68,6 +72,105 @@
  static struct shader_device *devices;
  static _Atomic unsigned point_reports;
  static _Atomic unsigned inout_reports;
@@ -117,10 +117,10 @@
 +    pipeline_trace_result(id, "driver_return", result);
 +    return result;
 +}
- int hybris_shader_enabled(void)
+ static int multiview_geometry_requested(const VkDeviceCreateInfo *info)
  {
-     return hybris_scaled_enabled() || hybris_point_size_enabled() ||
-@@ -702,8 +805,9 @@
+     int multiview = 0, geometry = 0;
+@@ -878,8 +981,9 @@
      }
      struct shader_device *device = find_device(handle);
      if (!device) return VK_ERROR_INITIALIZATION_FAILED;
@@ -131,7 +131,7 @@
      VkGraphicsPipelineCreateInfo *changed = hybris_scaled_alloc(allocator, count * sizeof(*changed), VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
      struct pipeline_copy *copies = hybris_scaled_alloc(allocator, count * sizeof(*copies), VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
      VkResult result = VK_ERROR_OUT_OF_HOST_MEMORY;
-@@ -725,7 +829,7 @@
+@@ -901,7 +1005,7 @@
              goto done;
          }
      }
@@ -140,7 +140,7 @@
      if (result == VK_SUCCESS) for (uint32_t i = 0; i < count; ++i) {
          VkResult attached = attach_polygon(device, &infos[i], &changed[i], allocator, &pipelines[i]);
          if (attached != VK_SUCCESS && result == VK_SUCCESS) result = attached;
-@@ -744,6 +848,7 @@
+@@ -920,6 +1024,7 @@
      }
      hybris_scaled_free(allocator, copies);
      hybris_scaled_free(allocator, changed);
