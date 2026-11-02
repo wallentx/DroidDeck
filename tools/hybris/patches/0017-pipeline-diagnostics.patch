@@ -1,0 +1,150 @@
+--- a/hybris/vulkan/compat/shader_dispatch.c
++++ b/hybris/vulkan/compat/shader_dispatch.c
+@@ -21,9 +21,13 @@
+ #include "bc_context.h"
+ #include "../layer/layer.h"
+ #include <stdatomic.h>
++#include <errno.h>
++#include <inttypes.h>
+ #include <pthread.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
++#include <sys/auxv.h>
+ 
+ 
+ struct shader {
+@@ -65,6 +69,105 @@
+ static struct shader_device *devices;
+ static _Atomic unsigned point_reports;
+ static _Atomic unsigned inout_reports;
++
++/* Diagnostic only: no extra shader capture, copies, or resource ownership. */
++#define PIPELINE_TRACE_CALLS 1024u
++#define PIPELINE_TRACE_ITEMS 8u
++#define PIPELINE_TRACE_HASH_BYTES (64u * 1024u)
++static pthread_once_t pipeline_trace_once = PTHREAD_ONCE_INIT;
++static int pipeline_trace_enabled;
++static _Atomic unsigned pipeline_trace_count;
++static void pipeline_trace_configure(void)
++{
++    if (getauxval(AT_SECURE)) return;
++    const char *value = getenv("HYBRIS_VULKAN_PIPELINE_DIAGNOSTICS");
++    pipeline_trace_enabled = value && !strcmp(value, "1");
++}
++static unsigned pipeline_trace_begin(struct shader_device *device, uint32_t count,
++    const VkGraphicsPipelineCreateInfo *infos)
++{
++    int saved_errno = errno;
++    pthread_once(&pipeline_trace_once, pipeline_trace_configure);
++    if (!pipeline_trace_enabled) { errno = saved_errno; return 0; }
++    unsigned previous = atomic_load_explicit(&pipeline_trace_count, memory_order_relaxed);
++    do {
++        if (previous > PIPELINE_TRACE_CALLS) { errno = saved_errno; return 0; }
++    } while (!atomic_compare_exchange_weak_explicit(&pipeline_trace_count, &previous,
++        previous + 1, memory_order_relaxed, memory_order_relaxed));
++    if (previous == PIPELINE_TRACE_CALLS) {
++        fprintf(stderr, "HYBRIS_PIPELINE trace_limit=%u\n", PIPELINE_TRACE_CALLS);
++        fflush(stderr);
++        errno = saved_errno;
++        return 0;
++    }
++    unsigned id = previous + 1;
++    unsigned policy = (device->point_size ? 1u : 0u) | (device->inout ? 2u : 0u) |
++        (device->clip ? 4u : 0u) | (device->cull ? 8u : 0u) |
++        (device->stage_point_size ? 16u : 0u) | (device->pervertex ? 32u : 0u) |
++        (device->vertex_stores ? 64u : 0u) | (device->polygon ? 128u : 0u) |
++        (device->multi_viewport ? 256u : 0u) | (device->dual_src ? 512u : 0u) |
++        (device->mali_spec ? 1024u : 0u) | (hybris_shader_cleanup_enabled() ? 2048u : 0u);
++    fprintf(stderr, "HYBRIS_PIPELINE id=%u phase=enter count=%u policy=0x%x scaled=0x%x\n",
++        id, count, policy, device->mask);
++    fflush(stderr);
++    for (uint32_t i = 0; i < count && i < PIPELINE_TRACE_ITEMS; ++i) {
++        for (uint32_t j = 0; j < infos[i].stageCount && j < PIPELINE_TRACE_ITEMS; ++j) {
++            const VkPipelineShaderStageCreateInfo *stage = &infos[i].pStages[j];
++            size_t bytes = 0, hashed = 0;
++            uint64_t hash = UINT64_C(14695981039346656037);
++            int captured = 0;
++            pthread_mutex_lock(&guard);
++            struct shader *shader = device->shaders;
++            while (shader && shader->handle != stage->module) shader = shader->next;
++            if (shader) {
++                captured = 1;
++                bytes = shader->size;
++                hashed = bytes < PIPELINE_TRACE_HASH_BYTES ? bytes : PIPELINE_TRACE_HASH_BYTES;
++                const unsigned char *code = (const unsigned char *)shader->code;
++                for (size_t k = 0; k < hashed; ++k)
++                    hash = (hash ^ code[k]) * UINT64_C(1099511628211);
++            }
++            pthread_mutex_unlock(&guard);
++            fprintf(stderr, "HYBRIS_PIPELINE id=%u input=%u stage=%u type=0x%x captured=%d bytes=%zu hashed=%zu fnv64=%016" PRIx64 "\n",
++                id, i, j, stage->stage, captured, bytes, hashed, captured ? hash : 0);
++        }
++    }
++    fflush(stderr);
++    errno = saved_errno;
++    return id;
++}
++static void pipeline_trace_result(unsigned id, const char *phase, VkResult result)
++{
++    if (!id) return;
++    int saved_errno = errno;
++    fprintf(stderr, "HYBRIS_PIPELINE id=%u phase=%s result=%d\n", id, phase, result);
++    fflush(stderr);
++    errno = saved_errno;
++}
++static VkResult pipeline_trace_call(unsigned id, struct shader_device *device,
++    VkDevice handle, VkPipelineCache cache, uint32_t count,
++    const VkGraphicsPipelineCreateInfo *infos, const VkAllocationCallbacks *allocator,
++    VkPipeline *pipelines)
++{
++    if (id) {
++        int saved_errno = errno;
++        flockfile(stderr);
++        for (uint32_t i = 0; i < count && i < PIPELINE_TRACE_ITEMS; ++i) {
++            VkShaderStageFlags stages = 0;
++            for (uint32_t j = 0; j < infos[i].stageCount && j < PIPELINE_TRACE_ITEMS; ++j)
++                stages |= infos[i].pStages[j].stage;
++            fprintf(stderr, "HYBRIS_PIPELINE id=%u output=%u flags=0x%x stage_count=%u first_stage_mask=0x%x\n",
++                id, i, infos[i].flags, infos[i].stageCount, stages);
++        }
++        fprintf(stderr, "HYBRIS_PIPELINE id=%u phase=driver_call count=%u\n", id, count);
++        fflush(stderr);
++        funlockfile(stderr);
++        errno = saved_errno;
++    }
++    VkResult result = device->create_pipelines(handle, cache, count, infos, allocator, pipelines);
++    pipeline_trace_result(id, "driver_return", result);
++    return result;
++}
+ int hybris_shader_enabled(void)
+ {
+     return hybris_scaled_enabled() || hybris_point_size_enabled() ||
+@@ -702,8 +805,9 @@
+     }
+     struct shader_device *device = find_device(handle);
+     if (!device) return VK_ERROR_INITIALIZATION_FAILED;
++    unsigned trace_id = pipeline_trace_begin(device, count, infos);
+     if (!device->mask && !device->point_size && !device->inout && !device->clip && !device->cull && !device->stage_point_size && !device->pervertex && !device->vertex_stores && !device->polygon && !device->multi_viewport && !device->dual_src)
+-        return device->create_pipelines(handle, cache, count, infos, allocator, pipelines);
++        return pipeline_trace_call(trace_id, device, handle, cache, count, infos, allocator, pipelines);
+     VkGraphicsPipelineCreateInfo *changed = hybris_scaled_alloc(allocator, count * sizeof(*changed), VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+     struct pipeline_copy *copies = hybris_scaled_alloc(allocator, count * sizeof(*copies), VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+     VkResult result = VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -725,7 +829,7 @@
+             goto done;
+         }
+     }
+-    result = device->create_pipelines(handle, cache, count, changed, allocator, pipelines);
++    result = pipeline_trace_call(trace_id, device, handle, cache, count, changed, allocator, pipelines);
+     if (result == VK_SUCCESS) for (uint32_t i = 0; i < count; ++i) {
+         VkResult attached = attach_polygon(device, &infos[i], &changed[i], allocator, &pipelines[i]);
+         if (attached != VK_SUCCESS && result == VK_SUCCESS) result = attached;
+@@ -744,6 +848,7 @@
+     }
+     hybris_scaled_free(allocator, copies);
+     hybris_scaled_free(allocator, changed);
++    pipeline_trace_result(trace_id, "leave", result);
+     return result;
+ }
+ static VkResult VKAPI_CALL create_compute_pipelines(VkDevice handle,VkPipelineCache cache,uint32_t count,
