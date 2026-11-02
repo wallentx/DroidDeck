@@ -16,6 +16,18 @@ fetch() {
 }
 fetch https://github.com/taowen/libhybris.git "$HYBRIS_REVISION" "$work/libhybris"
 fetch https://github.com/taowen/arlinux-rootfs.git "$PROTOCOL_REVISION" "$work/rootfs"
+export CONTAINER_ENGINE=podman
+builder_image="${BUILDER_IMAGE:-}"
+if [[ -z "$builder_image" ]]; then
+  builder_image="$("$work/libhybris/tools/ensure-builder.sh")"
+fi
+export BUILDER_IMAGE="$builder_image"
+mkdir -p "$work/vulkan-headers"
+"$CONTAINER_ENGINE" run --rm --network none "$BUILDER_IMAGE" \
+  tar -C /usr/include -cf - vulkan vk_video | tar -C "$work/vulkan-headers" -xf -
+grep -q 'VK_KHR_ROBUSTNESS_2_EXTENSION_NAME' "$work/vulkan-headers/vulkan/vulkan_core.h"
+grep -q 'VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES' "$work/vulkan-headers/vulkan/vulkan_core.h"
+export VULKAN_INCLUDE="$work/vulkan-headers"
 HYBRIS_TLS_SOURCE="$work/libhybris" python3 -m unittest discover \
   -s "$root/tools/tests" -p test_hybris_tls_capacity.py
 # The feature-chain regression compiles patched production source. Supply the
@@ -30,19 +42,11 @@ python3 -m unittest discover \
   -s "$root/tools/tests" -p test_hybris_inline_shader.py
 HYBRIS_CLIP_SOURCE="$work/libhybris" python3 -m unittest discover \
   -s "$root/tools/tests" -p test_hybris_clip_shader.py
-export CONTAINER_ENGINE=podman
-builder_image="${BUILDER_IMAGE:-}"
-if [[ -z "$builder_image" ]]; then
-  builder_image="$("$work/libhybris/tools/ensure-builder.sh")"
-fi
-mkdir -p "$work/vulkan-headers"
-"$CONTAINER_ENGINE" run --rm --network none "$builder_image" \
-  tar -C /usr/include -cf - vulkan vk_video | tar -C "$work/vulkan-headers" -xf -
-HYBRIS_PUSH_SOURCE="$work/libhybris" VULKAN_INCLUDE="$work/vulkan-headers" python3 -m unittest discover \
+HYBRIS_PUSH_SOURCE="$work/libhybris" python3 -m unittest discover \
   -s "$root/tools/tests" -p test_hybris_push_descriptors.py
-VULKAN_INCLUDE="$work/vulkan-headers" python3 -m unittest discover \
+python3 -m unittest discover \
   -s "$root/tools/tests" -p test_hybris_strip_names.py
-VULKAN_INCLUDE="$work/vulkan-headers" python3 -m unittest discover \
+python3 -m unittest discover \
   -s "$root/tools/tests" -p test_hybris_zink_profile.py
 git -C "$work/libhybris" apply --check "$root/tools/hybris/powervr-hal-version.patch"
 git -C "$work/libhybris" apply "$root/tools/hybris/powervr-hal-version.patch"
