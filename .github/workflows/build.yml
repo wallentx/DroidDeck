@@ -112,7 +112,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman patchelf zstd libvulkan-dev spirv-tools meson ninja-build mingw-w64 zip
+          sudo apt-get install -y podman patchelf zstd libvulkan-dev spirv-tools meson ninja-build mingw-w64 glslang-tools pkg-config zip
       - name: Test component validation
         run: |
           set -euo pipefail
